@@ -1,0 +1,125 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r15 - trunk
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2006-May/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r15%20-%20trunk&In-Reply-To=%3C200605032045.k43KjbJR029802%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   <LINK REL="Next"  HREF="000001.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r15 - trunk</H1>
+    <B>zwer at berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r15%20-%20trunk&In-Reply-To=%3C200605032045.k43KjbJR029802%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r15 - trunk">zwer at berlios.de
+       </A><BR>
+    <I>Wed May  3 22:45:37 CEST 2006</I>
+    <P><UL>
+        
+        <LI>Next message: <A HREF="000001.html">[Ffnetdev-svncheckins] r16 - trunk
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#0">[ date ]</a>
+              <a href="thread.html#0">[ thread ]</a>
+              <a href="subject.html#0">[ subject ]</a>
+              <a href="author.html#0">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2006-05-03 22:45:33 +0200 (Wed, 03 May 2006)
+New Revision: 15
+
+Modified:
+   trunk/osdworker.c
+   trunk/remote.c
+   trunk/remote.h
+Log:
+- Kleinigkeit am Anlernvorgang angepasst
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-04-29 06:52:33 UTC (rev 14)
++++ trunk/osdworker.c	2006-05-03 20:45:33 UTC (rev 15)
+@@ -533,15 +533,14 @@
+ 						dsyslog(&quot;[ffnetdev] VNC: KeyEvent\n&quot;);
+ 						cMyRemote *pRemote;
+ 						if ((pRemote = m_pPlugin-&gt;GetRemote()) != NULL) {	
+-							if (msg.ke.down) 
+-								pRemote-&gt;Put(Swap32IfLE(msg.ke.key), false, false);
+-							else 
+-								pRemote-&gt;Put(Swap32IfLE(msg.ke.key), false, true);
++							pRemote-&gt;Put(Swap32IfLE(msg.ke.key), false, !msg.ke.down);
+ 						}
+ #ifdef DEBUG
+-						fprintf(stderr, &quot;[ffnetdev] VNC: Remote: %04X\n&quot;, msg.ke.key);
++						fprintf(stderr, &quot;[ffnetdev] VNC: Remote: %04X %s\n&quot;, msg.ke.key, 
++						    msg.ke.down ? &quot;down&quot; : &quot;up&quot;);
+ #endif									
+-						dsyslog(&quot;[ffnetdev] VNC: Remote: %04X\n&quot;, msg.ke.key);
++						dsyslog(&quot;[ffnetdev] VNC: Remote: %04X %s\n&quot;, msg.ke.key, 
++						    msg.ke.down ? &quot;down&quot; : &quot;up&quot;);
+ 						break;
+ 		case rfbPointerEvent:		if (!RFBRead( ((char*)&amp;msg.pe)+1, sz_rfbPointerEventMsg-1))
+ 							return;
+
+Modified: trunk/remote.c
+===================================================================
+--- trunk/remote.c	2006-04-29 06:52:33 UTC (rev 14)
++++ trunk/remote.c	2006-05-03 20:45:33 UTC (rev 15)
+@@ -29,6 +29,9 @@
+ 
+ bool cMyRemote::Put(uint64 Code, bool Repeat, bool Release)
+ {
++    if ((cRemote::IsLearning()) &amp;&amp; (Release))
++	return false;
++    else
+ 	return cRemote::Put(Code, Repeat ,Release);
+ }
+ 
+
+Modified: trunk/remote.h
+===================================================================
+--- trunk/remote.h	2006-04-29 06:52:33 UTC (rev 14)
++++ trunk/remote.h	2006-05-03 20:45:33 UTC (rev 15)
+@@ -17,7 +17,7 @@
+   cMyRemote(const char *Name);
+   virtual bool Initialize(void);
+   virtual bool Ready(void);
+-  virtual bool Put(uint64 Code, bool Repeat = false, bool Release = false);
++  virtual bool Put(uint64 Code, bool Repeat, bool Release);
+ };
+ 
+ 
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	<LI>Next message: <A HREF="000001.html">[Ffnetdev-svncheckins] r16 - trunk
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#0">[ date ]</a>
+              <a href="thread.html#0">[ thread ]</a>
+              <a href="subject.html#0">[ subject ]</a>
+              <a href="author.html#0">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,2317 @@
+From zwer at mail.berlios.de  Sat Jan  6 23:04:07 2007
+From: zwer at mail.berlios.de (zwer at mail.berlios.de)
+Date: Sat, 6 Jan 2007 23:04:07 +0100
+Subject: [Ffnetdev-svncheckins] r24 - in trunk: . tools
+Message-ID: <200701062204.l06M479O018198@sheep.berlios.de>
+
+Author: zwer
+Date: 2007-01-06 23:04:00 +0100 (Sat, 06 Jan 2007)
+New Revision: 24
+
+Modified:
+   trunk/netosd.c
+   trunk/osdworker.c
+   trunk/tools/socket.c
+   trunk/tools/socket.h
+   trunk/tsworker.c
+   trunk/tsworker.h
+   trunk/vncEncodeCoRRE.c
+   trunk/vncEncodeHexT.c
+   trunk/vncEncodeRRE.c
+   trunk/vncEncoder.c
+Log:
+- tests mit UDP-Streaming
+
+Modified: trunk/netosd.c
+===================================================================
+--- trunk/netosd.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/netosd.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -59,9 +59,9 @@
+        if (Bitmap->Dirty(x1, y1, x2, y2))   
+        {  
+ #ifdef DEBUG         
+-	        fprintf(stderr, "[ffnetdev] NetOSD: Left: %d, Top: %d, X0: %d, Y0: %d, Width: %d, Height: %d\n", 
+-               			 Left(), Top(), Bitmap->X0(), Bitmap->Y0(), Bitmap->Width(), Bitmap->Height()); 
+-       		fprintf(stderr, "[ffnetdev] NetOSD: Dirty area x1: %d, y1: %d, x2: %d, y2: %d\n",x1,y1,x2,y2);
++	        //fprintf(stderr, "[ffnetdev] NetOSD: Left: %d, Top: %d, X0: %d, Y0: %d, Width: %d, Height: %d\n", 
++               	//		 Left(), Top(), Bitmap->X0(), Bitmap->Y0(), Bitmap->Width(), Bitmap->Height()); 
++       		//fprintf(stderr, "[ffnetdev] NetOSD: Dirty area x1: %d, y1: %d, x2: %d, y2: %d\n",x1,y1,x2,y2);
+ #endif
+ 		cOSDWorker::DrawBitmap(Left() + Bitmap->X0(), Top() + Bitmap->Y0(), *Bitmap);
+        		
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/osdworker.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -253,15 +253,18 @@
+    	OSDWrite((unsigned char*)&fu, sz_rfbFramebufferUpdateMsg);
+ 	//int BufferSize = m_Instance->m_pEncoder->RequiredBuffSize(x2-x1, y2-y1);
+ 	//m_Instance->CreateSendBuffer(BufferSize);
+-	int BufferSize = m_Instance->m_pEncoder->EncodeRect((BYTE*)(m_Instance->m_pOsdBitmap->Data(0, 0)), m_Instance->m_pSendBuffer, rect);
++	if (m_Instance->m_pEncoder != NULL)
++	{
++	    int BufferSize = m_Instance->m_pEncoder->EncodeRect((BYTE*)(m_Instance->m_pOsdBitmap->Data(0, 0)), m_Instance->m_pSendBuffer, rect);
+ #ifdef DEBUG
+-	fprintf(stderr, "[ffnetdev] VNC: Send OSD Data %d Bytes\n", BufferSize);
++	    fprintf(stderr, "[ffnetdev] VNC: Send OSD Data %d/%d/%d/%d x1/y1/x2/y2 %d Bytes\n", x1, y1, x2, y2, BufferSize);
+ #endif
+-	dsyslog("[ffnetdev] VNC: Send OSD Data %d Bytes\n", BufferSize);
+-       	OSDWrite((unsigned char*)m_Instance->m_pSendBuffer, BufferSize);
+-	m_Instance->m_pOsdBitmap->Clean();
++	    dsyslog("[ffnetdev] VNC: Send OSD Data %d/%d/%d/%d x1/y1/x2/y2 %d Bytes\n", x1, y1, x2, y2, BufferSize);
++       	    OSDWrite((unsigned char*)m_Instance->m_pSendBuffer, BufferSize);
++	    m_Instance->m_pOsdBitmap->Clean();
+ 	
+-	m_Instance->m_bOSDisClear = false;
++	    m_Instance->m_bOSDisClear = false;
++	}
+ 	
+    	return true;
+    }
+
+Modified: trunk/tools/socket.c
+===================================================================
+--- trunk/tools/socket.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/tools/socket.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -1,11 +1,15 @@
+ #include "tools/socket.h"
+ 
++#include <vdr/tools.h>
++
+ #include <string.h>
+ #include <arpa/inet.h>
+ #include <unistd.h>
+ #include <errno.h>
+ #include <fcntl.h>
+ 
++#define UDP_TX_BUF_SIZE ((188*7+3)*20)
++
+ cTBSocket::cTBSocket(int Type) {
+ 	memset(&m_LocalAddr, 0, sizeof(m_LocalAddr));
+ 	memset(&m_RemoteAddr, 0, sizeof(m_RemoteAddr));
+@@ -16,6 +20,46 @@
+ 	if (IsOpen()) Close();
+ }
+ 
++bool cTBSocket::OpenUDP(const std::string &Host, unsigned int Port) {
++	int socket, tmp;
++	struct sockaddr_in my_addr;
++
++	if (IsOpen()) Close();
++	
++	if ((socket = ::socket(AF_INET, m_Type, 0)) == -1)
++		return false;
++		
++	m_RemoteAddr.sin_family = AF_INET;
++	m_RemoteAddr.sin_port   = htons(Port);
++	m_RemoteAddr.sin_addr.s_addr = inet_addr(Host.c_str());
++	
++	my_addr.sin_family = AF_INET;
++	my_addr.sin_port = htons(Port);
++	my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
++		    
++/*	tmp = 1;
++	if (setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, (char*)&tmp, sizeof(tmp)) < 0)
++	    goto closefd;*/
++		    
++	/* limit the tx buf size to limit latency */
++	tmp = UDP_TX_BUF_SIZE;
++	if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char*)&tmp, sizeof(tmp)) < 0)
++	    goto closefd;
++
++	/* the bind is needed to give a port to the socket now */
++/*	if (bind(socket,(struct sockaddr *)&my_addr, sizeof(my_addr)) < 0) 
++	    goto closefd;*/
++
++	if (!cTBSource::Open(socket))
++	    goto closefd; // return false;
++
++	return true;
++
++closefd:
++    ::close(socket);
++    return false;
++}
++
+ bool cTBSocket::Connect(const std::string &Host, unsigned int Port) {
+ 	socklen_t len;
+ 	int socket;
+
+Modified: trunk/tools/socket.h
+===================================================================
+--- trunk/tools/socket.h	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/tools/socket.h	2007-01-06 22:04:00 UTC (rev 24)
+@@ -44,6 +44,11 @@
+ 	   otherwise, setting errno appropriately. */
+ 	virtual bool Shutdown(int How);
+ 
++	/* OpenUDP() Open the associated socket. 
++	   Returns true on success and false otherwise, setting errno 
++	   appropriately. */
++	virtual bool OpenUDP(const std::string &Ip, uint Port);
++	
+ 	/* Close() closes the associated socket and releases all structures. 
+ 	   Returns true on success and false otherwise, setting errno 
+ 	   appropriately. The object is in the closed state afterwards, regardless
+@@ -102,7 +107,11 @@
+ }
+ 
+ inline ssize_t cTBSocket::SysWrite(const void *Buffer, size_t Length) const {
+-	return ::send(*this, Buffer, Length, 0);
++	if ((m_Type == SOCK_DGRAM)) {
++		socklen_t len = sizeof(m_RemoteAddr);
++		return ::sendto(*this, Buffer, Length, 0, (sockaddr*)&m_RemoteAddr, len);
++	} else
++		return ::send(*this, Buffer, Length, 0);
+ }
+ 
+ #endif // TOOLBOX_SOCKET_H
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/tsworker.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -15,8 +15,19 @@
+ #include "tsworker.h"
+ #include "config.h"
+ 
+-#define MINSENDBYTES KILOBYTE(500)
++#define TS_PACKET_SIZE (188)
++#define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
++#define UDP_MAX_BITRATE 7000000
++#define UDP_SEND_INTERVALL 1000
+ 
++struct TSData
++{
++	char packNr;
++    char packsCount;
++    char tsHeaderCRC;
++    char data[UDP_PACKET_SIZE];
++};
++
+ //////////////////////////////////////////////////////////////////////////////////////////////////
+ //////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+@@ -25,7 +36,7 @@
+ cTSWorker::cTSWorker(void)
+ 		: cThread("[ffnetdev] TS streamer")
+ {
+-	m_Active = false;
++	m_Active = false;	
+ 	
+ 	m_StreamClient = NULL;
+ 	origPrimaryDevice = -1;
+@@ -42,6 +53,7 @@
+ 		m_Instance->TSPort = tsport;		
+ 		m_Instance->Start();
+ 		m_Instance->m_pPlugin = pPlugin;
++		m_Instance->close_Streamclient_request = false;
+ 	}
+ }
+ 
+@@ -65,8 +77,13 @@
+ }
+ 
+ void cTSWorker::Action(void) {
++    ActionTCP();
++    //ActionUDP();
++}
++
++
++void cTSWorker::ActionTCP(void) {
+ 	cTBSelect select;
+-	//cTBSocket m_StreamListen(SOCK_DGRAM);
+ 	cTBSocket m_StreamListen;
+ 	struct timeval oldtime;
+ 	long bytessend = 0;
+@@ -181,18 +198,17 @@
+ 					    if (((written=m_StreamClient->Write(&buffer[done], available)) < 0) && 
+ 						(errno != EAGAIN)) 
+ 					    {
+-						CloseStreamClient();
++							CloseStreamClient();
+ 					    }
+ 					    
+ 					    if (written > 0)
+ 					    {
+-						
+-						available -= written;
+-						done      += written;
++							available -= written;
++							done      += written;
+ 					    }
+ 					    else
+ 					    {
+-						cCondWait::SleepMs(5);
++							cCondWait::SleepMs(5);
+ 					    }
+ 					}
+ 					m_StreamDevice->Del(count);
+@@ -209,17 +225,18 @@
+ 					bytessend += count;
+ 					if (curtime.tv_sec > oldtime.tv_sec + 10)
+ 					{
+-					    double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
++						double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
+ 							- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
++						double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
+ #ifdef DEBUG
+-					    fprintf(stderr, "[ffnetdev] Streamer: current TransferRate %d Byte/Sec, %d Bytes send\n",
+-						(int)((bytessend - oldbytessend) / secs), bytessend - oldbytessend);
++						fprintf(stderr, "[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n",
++							rate, bytessend - oldbytessend);
+ #endif						
+-					    dsyslog("[ffnetdev] Streamer: current TransferRate %d Byte/Sec, %d Bytes send\n",
+-						(int)((bytessend - oldbytessend) / secs), bytessend - oldbytessend);
+-					    
+-					    oldbytessend = bytessend;
+-					    oldtime = curtime;
++						dsyslog("[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n",
++							rate, bytessend - oldbytessend);
++						
++						oldbytessend = bytessend;
++						oldtime = curtime;
+ 					}
+ 				}
+ 				m_StreamDevice->UnlockOutput();
+@@ -246,3 +263,219 @@
+ 
+ }
+ 
++
++void cTSWorker::ActionUDP(void) 
++{
++	cTBSocket m_StreamClient(SOCK_DGRAM);
++	struct timeval oldtime, curtime;
++	u64 oldPacketTime = 0;
++	long bytessend = 0;
++	long oldbytessend = 0;
++	long toSend = 0;
++	int restData = 0;
++	TSData tsData;
++
++	const char* StreamIp = "192.168.0.61";
++	uint StreamPort = TSPort;
++
++	m_Active		= true;
++	have_Streamclient	= true;
++	
++	if (!m_StreamClient.OpenUDP(StreamIp, StreamPort)) 
++	{
++		isyslog("[ffnetdev] Streamer: Couldn't create UDP-Socket: %s", strerror(errno));
++		m_Active = false;
++	} 
++	else
++	    isyslog("[ffnetdev] Streamer: UDP-Socket create successful");
++
++	gettimeofday(&oldtime, 0);
++	tsData.packNr = 0;
++	tsData.packsCount = 0;
++	tsData.tsHeaderCRC = 0;
++
++	while (m_Active) 
++	{
++		/* Check for closed streaming client connection */		
++		if (have_Streamclient==true) 
++		{ 
++			if (close_Streamclient_request==true) 
++			{
++				close_Streamclient_request = false;
++				have_Streamclient = false;
++				
++				m_pPlugin->RestorePrimaryDevice();
++				
++				if ( m_StreamClient.Close() ) 
++				{
++#ifdef DEBUG
++					fprintf(stderr, "[ffnetdev] Streamer: Client socket closed successfully.\n");
++#endif
++					isyslog("[ffnetdev] Streamer: Connection closed: client %s:%d",
++						 m_StreamClient.RemoteIp().c_str(), m_StreamClient.RemotePort());
++				}
++				else
++				{
++#ifdef DEBUG
++					fprintf(stderr, "[ffnetdev] Streamer: Error closing client socket.\n");
++#endif
++					esyslog("[ffnetdev] Streamer: Error closing connection.");
++					m_Active=false;
++					continue;
++				} 
++					  
++			}
++			
++			int count=0;
++			
++			m_StreamDevice->LockOutput();
++			uchar *buffer = m_StreamDevice->Get(count);
++			if (buffer!=NULL) 
++			{	
++				int available = count;
++				int done      = 0;
++				int written   = 0;
++				char data[100];
++				int  rcvCount;
++
++				rcvCount=m_StreamClient.Read(data, 10);
++				if (rcvCount > 0)
++				{
++					isyslog("[ffnetdev] Streamer: empfangen:%d Bytes\n", rcvCount);
++				}
++
++				if (oldPacketTime == 0)
++					oldPacketTime = get_time()- UDP_SEND_INTERVALL;
++
++				while ((available > 0) && (have_Streamclient == true) &&
++					   (!close_Streamclient_request))
++				{
++					while ((tsData.packsCount * TS_PACKET_SIZE < UDP_PACKET_SIZE) && (available > 0))
++					{
++						int moveCount = (available >= TS_PACKET_SIZE) ?  TS_PACKET_SIZE : available;
++						moveCount = (moveCount + restData >= TS_PACKET_SIZE) ?  TS_PACKET_SIZE - restData : moveCount;
++						memcpy(&tsData.data[(tsData.packsCount * TS_PACKET_SIZE) + restData], &buffer[done], moveCount);
++						available -= moveCount;
++						done += moveCount;
++						if (restData + moveCount == TS_PACKET_SIZE)
++						{
++							char *data = &tsData.data[tsData.packsCount * TS_PACKET_SIZE];
++							for (int i = 0; i < 4; i++)
++							{	
++								tsData.tsHeaderCRC += (char)*(data + i);
++							}
++							restData = 0;
++							tsData.packsCount ++;
++						}
++						else
++						{
++							restData = moveCount;
++							continue;
++						}
++					}
++
++					if (restData > 0)
++						continue;
++
++					while (get_time() < oldPacketTime + UDP_SEND_INTERVALL)
++						cCondWait::SleepMs(1);
++
++					if (toSend == 0)
++						toSend = (long)(UDP_MAX_BITRATE * (((double)get_time() - oldPacketTime) / 1000000) / 8);
++					
++					int sendcount = tsData.packsCount * TS_PACKET_SIZE + 3;
++					if (toSend < sendcount)
++					{
++						toSend = 0;
++						oldPacketTime = get_time();
++						continue;
++					}
++
++					char* pTsData = (char*)&tsData;
++					while ((sendcount > 0) && (have_Streamclient == true) &&
++					   (!close_Streamclient_request))
++					{
++						if (((written=m_StreamClient.Write(pTsData, sendcount)) < 0) && 
++							(errno != EAGAIN)) 
++						{
++							isyslog("[ffnetdev] Streamer: Couldn't send data: %d %s Len:%d\n", errno, strerror(errno), sendcount);
++							CloseStreamClient();
++						}
++						
++						if (written > 0)
++						{
++							sendcount -= written;
++							pTsData   += written;
++							toSend	  -= written;
++						}
++						else
++						{
++							cCondWait::SleepMs(5);
++						}
++					}
++
++					if (sendcount == 0)
++					{
++						tsData.packsCount = 0;
++						tsData.tsHeaderCRC = 0;
++						tsData.packNr ++;
++					}
++				}
++				m_StreamDevice->Del(count);
++
++				gettimeofday(&curtime, 0);
++				if (oldtime.tv_sec == 0)
++				{
++					oldtime = curtime;
++					bytessend    = 0;
++					oldbytessend = 0;
++				}
++					
++				bytessend += count;
++				if (curtime.tv_sec > oldtime.tv_sec + 10)
++				{
++					double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
++						- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
++					double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
++#ifdef DEBUG
++					fprintf(stderr, "[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n",
++						rate, bytessend - oldbytessend);
++#endif						
++					dsyslog("[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n",
++						rate, bytessend - oldbytessend);
++					
++					oldbytessend = bytessend;
++					oldtime = curtime;
++				}
++			}
++			m_StreamDevice->UnlockOutput();
++
++		} 
++		else 
++		{  
++			/* simply discard all data in ringbuffer */
++			int count=0;
++			if ( (m_StreamDevice->Get(count)) !=NULL ) 
++			{
++				m_StreamDevice->Del(count);
++#ifdef DEBUG
++				fprintf (stderr, "[ffnetdev] Streamer: Bytes not sent, but deleted from ringbuffer: %d\n",count);
++#endif
++				dsyslog("[ffnetdev] Streamer: Bytes not sent, but deleted from ringbuffer: %d\n",count);
++			}
++		}
++		cCondWait::SleepMs(3);
++
++	} // while(m_Active)
++
++}
++
++/* Returns time since 1970 in microseconds */
++u64 cTSWorker::get_time(void)
++{
++	struct timeval tv;
++	struct timezone tz={0,0};
++
++	gettimeofday(&tv,&tz);
++	return ((u64)tv.tv_sec)*1000000+((u64)tv.tv_usec);
++}
+
+Modified: trunk/tsworker.h
+===================================================================
+--- trunk/tsworker.h	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/tsworker.h	2007-01-06 22:04:00 UTC (rev 24)
+@@ -16,7 +16,9 @@
+ #include "netosd.h"
+ #include "ffnetdev.h"
+ 
++typedef unsigned long long u64;
+ 
++
+ // --- cTSWorker -------------------------------------------------------------
+ 
+ class cTSWorker : public cThread {
+@@ -30,9 +32,12 @@
+ 	int TSPort;
+ 	int origPrimaryDevice;
+ 	cPluginFFNetDev *m_pPlugin;	
++	u64 get_time(void);
+ 
+ protected:
+ 	virtual void Action(void);
++	virtual void ActionTCP(void);
++	virtual void ActionUDP(void);
+ 	void Stop(void);
+ public:
+ 	cTSWorker(void);
+
+Modified: trunk/vncEncodeCoRRE.c
+===================================================================
+--- trunk/vncEncodeCoRRE.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/vncEncodeCoRRE.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -203,8 +203,8 @@
+ 	// Do the encoding
+ 	UINT size = InternalEncodeRect(source, dest, rect);
+ 
+-	const int rectW = rect.right - rect.left;
+-	const int rectH = rect.bottom - rect.top;
++	const int rectW = rect.right - rect.left + 1;
++	const int rectH = rect.bottom - rect.top + 1;
+ 
+ 	// Will this rectangle have been split for encoding?
+ 	if ((rectW>m_maxwidth) || (rectH>m_maxheight))
+@@ -286,8 +286,8 @@
+ {
+ 	int subrects = -1;
+ 
+-	const UINT rectW = rect.right - rect.left;
+-	const UINT rectH = rect.bottom - rect.top;
++	const UINT rectW = rect.right - rect.left + 1;
++	const UINT rectH = rect.bottom - rect.top + 1;
+ 
+ 	// Create the rectangle header
+ 	rfbFramebufferUpdateRectHeader *surh=(rfbFramebufferUpdateRectHeader *)dest;
+
+Modified: trunk/vncEncodeHexT.c
+===================================================================
+--- trunk/vncEncodeHexT.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/vncEncodeHexT.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -81,8 +81,8 @@
+ UINT
+ vncEncodeHexT::EncodeRect(BYTE *source, BYTE *dest, const RECT &rect)
+ {
+-	const UINT rectW = rect.right - rect.left;
+-	const UINT rectH = rect.bottom - rect.top;
++	const UINT rectW = rect.right - rect.left + 1;
++	const UINT rectH = rect.bottom - rect.top + 1;
+ 	int encodedResult;
+ 
+ 	// Create the rectangle header
+@@ -176,8 +176,8 @@
+ 			RECT hexrect;													\
+ 			hexrect.left = x;												\
+ 			hexrect.top = y;												\
+-			hexrect.right = x+w;											\
+-			hexrect.bottom = y+h;											\
++			hexrect.right = x+w-1;											\
++			hexrect.bottom = y+h-1;											\
+ 			Translate(source, (BYTE *) &clientPixelData, hexrect);			\
+ 																			\
+ 			rectoffset = destoffset;										\
+
+Modified: trunk/vncEncodeRRE.c
+===================================================================
+--- trunk/vncEncodeRRE.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/vncEncodeRRE.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -258,8 +258,8 @@
+ {
+ 	int subrects = -1;
+ 
+-	const UINT rectW = rect.right - rect.left;
+-	const UINT rectH = rect.bottom - rect.top;
++	const UINT rectW = rect.right - rect.left + 1;
++	const UINT rectH = rect.bottom - rect.top + 1;
+ 
+ 	// Create the rectangle header
+ 	rfbFramebufferUpdateRectHeader *surh=(rfbFramebufferUpdateRectHeader *)dest;
+
+Modified: trunk/vncEncoder.c
+===================================================================
+--- trunk/vncEncoder.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/vncEncoder.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -121,8 +121,8 @@
+ 					(char *)sourcepos,
+ 					(char *)dest,
+ 					m_bytesPerRow,
+-					rect.right-rect.left,
+-					rect.bottom-rect.top
++					rect.right-rect.left+1,
++					rect.bottom-rect.top+1
+ 					);
+ }
+ 
+@@ -142,8 +142,8 @@
+ vncEncoder::EncodeRect(BYTE *source, BYTE *dest, const RECT &rect)
+ {
+ 
+-	const int rectW = rect.right - rect.left;
+-	const int rectH = rect.bottom - rect.top;
++	const int rectW = rect.right - rect.left + 1;
++	const int rectH = rect.bottom - rect.top + 1;
+ 
+ 
+ 	// Create the header for the update in the destination area
+
+
+
+From zwer at mail.berlios.de  Tue Jan 16 23:57:51 2007
+From: zwer at mail.berlios.de (zwer at mail.berlios.de)
+Date: Tue, 16 Jan 2007 23:57:51 +0100
+Subject: [Ffnetdev-svncheckins] r25 - in trunk: . tools
+Message-ID: <200701162257.l0GMvp4r001910@sheep.berlios.de>
+
+Author: zwer
+Date: 2007-01-16 23:57:40 +0100 (Tue, 16 Jan 2007)
+New Revision: 25
+
+Modified:
+   trunk/pes2ts.c
+   trunk/pes2ts.h
+   trunk/streamdevice.c
+   trunk/streamdevice.h
+   trunk/tools/socket.c
+   trunk/tsworker.c
+Log:
+- auf PES-Streaming umgestellt
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/pes2ts.c	2007-01-16 22:57:40 UTC (rev 25)
+@@ -13,26 +13,44 @@
+ 
+ #include "pes2ts.h"
+ 
+-cPES2TSRemux::cPES2TSRemux(int VPid, int APid):
++//////////////////////////////////////////////////////////////////////////////
++cPESRemux::cPESRemux(int inputBufferSize, int outputBufferSize): 
++   m_InputBuffer(new cRingBufferLinear(inputBufferSize, outputBufferSize))
++{
++   OutputLocked = false;
++   m_InputBuffer->SetTimeouts(0, 1000);  // IMPORTANT to avoid busy wait in threads main loop and thus a high CPU load
++}
++
++cPESRemux::~cPESRemux()
++{
++   delete m_InputBuffer;
++}
++
++int cPESRemux::Put(const uchar *Data, int Count)
++{
++  InputMutex.Lock();
++  int result = m_InputBuffer->Put(Data, Count);
++  InputMutex.Unlock();
++  return ( result);
++}
++
++
++//////////////////////////////////////////////////////////////////////////////
++cPES2TSRemux::cPES2TSRemux(int VPid, int APid): cPESRemux(INPUTBUFSIZE, IPACKS),
+     cThread("[ffnetdev] PES2TS remux"),
+     m_OutputBuffer(new cRingBufferLinear(OUTPUTBUFSIZE, TS_SIZE * 2)),
+-    m_InputBuffer(new cRingBufferLinear(INPUTBUFSIZE, IPACKS)),
+     m_Active(false),
+     m_PlayModeChanged(false)
+ {
+   vpid = VPid;
+   apid = APid;
+-  m_InputBuffer->SetTimeouts(0, 1000);  // IMPORTANT to avoid busy wait in threads main loop and thus a high CPU load
+   Start();
+-  OutputLocked = false;
+ }
+ 
+ cPES2TSRemux::~cPES2TSRemux()
+ {
+   m_Active = false;
+-  delete m_InputBuffer;
+   delete m_OutputBuffer;
+-
+ }
+ 
+ void cPES2TSRemux::Action(void)
+@@ -57,8 +75,8 @@
+ 
+     if (m_PlayModeChanged)
+     {
+-	cCondWait::SleepMs(1500);
+-	m_PlayModeChanged = false;
++	   cCondWait::SleepMs(1500);
++	   m_PlayModeChanged = false;
+     }
+ 
+     if (m_InputBuffer->Available() < (int)IPACKS*10) {	
+@@ -199,12 +217,11 @@
+ }
+ 
+ 
+-int cPES2TSRemux::Put(const uchar *Data, int Count)
++//////////////////////////////////////////////////////////////////////////////
++cPES2PESRemux::cPES2PESRemux(): cPESRemux(INPUTBUFSIZE + OUTPUTBUFSIZE, IPACKS)
+ {
+-  InputMutex.Lock();
+-  int result = m_InputBuffer->Put(Data, Count);
+-  InputMutex.Unlock();
+-  return ( result);
+ }
+ 
+-
++cPES2PESRemux::~cPES2PESRemux()
++{
++}
+
+Modified: trunk/pes2ts.h
+===================================================================
+--- trunk/pes2ts.h	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/pes2ts.h	2007-01-16 22:57:40 UTC (rev 25)
+@@ -16,15 +16,40 @@
+ #define TS_SIZE         188
+ #define IPACKS		2048
+ 
+-class cPES2TSRemux: public cThread {
++class cPESRemux {
+ private:
++   bool  	   	   OutputLocked;
++   
++protected:
++   cRingBufferLinear *m_InputBuffer;
++   cMutex  	         InputMutex;
++
++public:
++   cPESRemux(int inputBufferSize, int outputBufferSize);
++	virtual ~cPESRemux();
++	
++   int Put(const uchar *Data, int Count);
++   void DelInput (int Count) { InputMutex.Lock(); m_InputBuffer ->Del(Count); InputMutex.Unlock(); }
++   void ClearInput () { InputMutex.Lock(); m_InputBuffer ->Clear(); InputMutex.Unlock(); }
++   
++   virtual int Available(void) = 0;
++   virtual int Free(void) = 0;
++   virtual int InputFree(void) = 0;
++   virtual uchar *Get(int &Count) = 0;
++   virtual void DelOutput(int Count) = 0;
++   virtual void ClearOutput() = 0;
++   void LockOutput()   { while (OutputLocked) cCondWait::SleepMs(1); OutputLocked = true; }
++   void UnlockOutput() { OutputLocked = false; }
++	virtual void PlayModeChange() {}; 
++   
++};
++
++class cPES2TSRemux: public cPESRemux, cThread {
++private:
+ 	cRingBufferLinear *m_OutputBuffer;
+-	cRingBufferLinear *m_InputBuffer;
+ 	bool               m_Active;
+ 	unsigned short	   vpid;
+ 	unsigned short	   apid;
+-        bool  	   	   OutputLocked;
+-	cMutex  	   InputMutex;
+ 	bool 		   m_PlayModeChanged;
+   
+ protected:
+@@ -34,17 +59,28 @@
+ 	cPES2TSRemux(int VPid, int APid);
+ 	virtual ~cPES2TSRemux();
+ 
+-	int Free(void) { return m_InputBuffer->Free(); }
+-	int Available(void) { return m_OutputBuffer->Available(); }
+-	int Put(const uchar *Data, int Count);
++   int Available(void) { return m_OutputBuffer->Available(); }
++	int Free(void) { return m_OutputBuffer->Free(); }
++	int InputFree(void) { return m_InputBuffer->Free(); }
+ 	uchar *Get(int &Count) { return  m_OutputBuffer->Get(Count); }
+ 	void DelOutput(int Count) { m_OutputBuffer->Del(Count); }
+-	void DelInput (int Count) { InputMutex.Lock(); m_InputBuffer ->Del(Count); InputMutex.Unlock(); }
+ 	void ClearOutput() { LockOutput(); m_OutputBuffer->Clear(); UnlockOutput(); }
+-	void ClearInput () { InputMutex.Lock(); m_InputBuffer ->Clear(); InputMutex.Unlock(); }
+-	void LockOutput()   { while (OutputLocked) cCondWait::SleepMs(1); OutputLocked = true; }
+-	void UnlockOutput() { OutputLocked = false; }
+ 	void PlayModeChange() { m_PlayModeChanged = true; } 
++	
+ };
+ 
++class cPES2PESRemux: public cPESRemux {
++public:
++	cPES2PESRemux();
++	virtual ~cPES2PESRemux();
++
++   int Available(void) { return m_InputBuffer->Available(); }
++   int Free(void) { return m_InputBuffer->Free(); }
++   int InputFree(void) { return m_InputBuffer->Free(); }
++	uchar *Get(int &Count) { return  m_InputBuffer->Get(Count); }
++	void DelOutput(int Count) { m_InputBuffer->Del(Count); }
++	void ClearOutput() { LockOutput(); m_InputBuffer->Clear(); UnlockOutput(); } 
++	
++};
++
+ #endif // PES2TSREMUX_H
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/streamdevice.c	2007-01-16 22:57:40 UTC (rev 25)
+@@ -12,103 +12,97 @@
+ 
+ cStreamDevice::cStreamDevice(void)
+ {
+-#ifdef DEBUG
+-    fprintf(stderr,"[ffnetdev] Device: Constructor cStreamDevice \n");
+-#endif
+-    m_Remux = new cPES2TSRemux(TS_VPID, TS_APID);   
+-
++    dsyslog("[ffnetdev] Device: Constructor cStreamDevice \n");
++    //m_Remux = new cPES2TSRemux(TS_VPID, TS_APID);   
++    m_Remux = new cPES2PESRemux();   
+ }
+ 
+ cStreamDevice::~cStreamDevice(void)
+ {
+-#ifdef DEBUG    
+-    fprintf(stderr,"[ffnetdev] Device: Destructor cStreamDevice \n");
+-#endif
+-    DELETENULL(m_Remux);
++   dsyslog("[ffnetdev] Device: Destructor cStreamDevice \n");
++   DELETENULL(m_Remux);
+ }
+ 
+ 
+ void cStreamDevice::MakePrimaryDevice(bool On)
+ {
+-#ifdef DEBUG
+-  fprintf(stderr,"[ffnetdev] Device: ffnetdev becomes primary device. Registering our OSD provider...\n");
+-#endif
++  dsyslog("[ffnetdev] Device: ffnetdev becomes primary device. Registering our OSD provider...\n");
+   new cNetOSDProvider();
+ }
+ 
+ int cStreamDevice::ProvidesCa(const cChannel *Channel) const
+ {
+-    return 0;
++   return 0;
+ }
+ 
+ bool cStreamDevice::HasDecoder(void) const
+ {
+-    return true; // We can decode MPEG2
++   return true; // We can decode MPEG2
+ }
+ 
+ bool cStreamDevice::CanReplay(void) const
+ {
+-    return true;  // We can replay
++   return true;  // We can replay
+ }
+ 
+ bool cStreamDevice::SetPlayMode(ePlayMode PlayMode)
+ {
+-    fprintf(stderr, "[ffnetdev] Device: Setting playmode(not implemented). Mode: %d\n",PlayMode);
+-    cOSDWorker::SendPlayMode(PlayMode);
+-    m_Remux->ClearInput();
+-    m_Remux->ClearOutput();
+-    m_Remux->PlayModeChange();
+-    return true;
++   dsyslog("[ffnetdev] Device: Setting playmode. Mode: %d\n",PlayMode);
++   cOSDWorker::SendPlayMode(PlayMode);
++   m_Remux->ClearInput();
++   m_Remux->ClearOutput();
++   m_Remux->PlayModeChange();
++   return true;
+ }
+ 
+ void cStreamDevice::TrickSpeed(int Speed)
+ {
+-    fprintf(stderr,"[ffnetdev] Device: Trickspeed(not implemented). Speed: %d\n", Speed);
+-    m_Remux->ClearInput();
+-    m_Remux->ClearOutput();
+-    m_Remux->PlayModeChange();
++   dsyslog("[ffnetdev] Device: Trickspeed(not implemented). Speed: %d\n", Speed);
++   m_Remux->ClearInput();
++   m_Remux->ClearOutput();
++   m_Remux->PlayModeChange();
+ }
+ 
+ void cStreamDevice::Clear(void)
+ {
+-    fprintf(stderr,"[ffnetdev] Device: Clear(not implemented).\n");
+-    m_Remux->ClearInput();
+-    m_Remux->ClearOutput();
+-    m_Remux->PlayModeChange();
++   dsyslog("[ffnetdev] Device: Clear(not implemented).\n");
++   m_Remux->ClearInput();
++   m_Remux->ClearOutput();
++   m_Remux->PlayModeChange();
+ //    cDevice::Clear();
+ }
+ void cStreamDevice::Play(void)
+ {
+-    fprintf(stderr,"[ffnetdev] Device: Play(not implemented).\n");
++   dsyslog("[ffnetdev] Device: Play(not implemented).\n");
+ //    cDevice::Play();
+ }
+ 
+ void cStreamDevice::Freeze(void)
+ {
+-    fprintf(stderr,"[ffnetdev] Device: Freeze(not implemented).\n");
++    dsyslog("[ffnetdev] Device: Freeze(not implemented).\n");
+ //    cDevice::Freeze();
+ }
+ 
+ void cStreamDevice::Mute(void)
+ {
+-    fprintf(stderr,"[ffnetdev] Device: Mute(not implemented).\n");
++   dsyslog("[ffnetdev] Device: Mute(not implemented).\n");
+ //    cDevice::Mute();
+ }
+ 
+ void cStreamDevice::SetVolumeDevice(int Volume)
+ {
+-  fprintf (stderr, "[ffnetdev] Device: Setting volume to %d (not implemented).\n", Volume);
++  dsyslog("[ffnetdev] Device: Setting volume to %d (not implemented).\n", Volume);
+ }
+ 
+ void cStreamDevice::StillPicture(const uchar *Data, int Length)
+ {
+-    fprintf(stderr,"[ffnetdev] Device: StillPicture(not implemented).\n");
++   dsyslog("[ffnetdev] Device: StillPicture(not implemented).\n");
+ }
+ 
+ bool cStreamDevice::Poll(cPoller &Poller, int TimeoutMs)
+ {
+-  //fprintf(stderr,"[ffnetdev] Device: Poll TimeoutMs: %d ....\n",TimeoutMs);
+-  return true;
++   //dsyslog("[ffnetdev] Device: Poll TimeoutMs: %d ....\n",TimeoutMs);
++   return true;
+ }
+ /* ----------------------------------------------------------------------------
+  */
+@@ -120,7 +114,7 @@
+ {
+    if (cTSWorker::HaveStreamClient()) 
+    {
+-       while ((m_Remux->Free() < Length) && cTSWorker::HaveStreamClient())
++       while ((m_Remux->InputFree() < Length) && cTSWorker::HaveStreamClient())
+            cCondWait::SleepMs(1);
+        int result=m_Remux->Put(Data, Length);
+        if (result!=Length) {
+@@ -150,7 +144,7 @@
+    if (cTSWorker::HaveStreamClient()) 
+    {
+ 
+-       while ((m_Remux->Free() < Length) && cTSWorker::HaveStreamClient())
++       while ((m_Remux->InputFree() < Length) && cTSWorker::HaveStreamClient())
+            cCondWait::SleepMs(1);
+        int result=m_Remux->Put(Data, Length);
+        if (result!=Length) {
+
+Modified: trunk/streamdevice.h
+===================================================================
+--- trunk/streamdevice.h	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/streamdevice.h	2007-01-16 22:57:40 UTC (rev 25)
+@@ -17,7 +17,7 @@
+ 
+ class cStreamDevice: public cDevice {
+ private:
+-	  cPES2TSRemux *m_Remux;
++	  cPESRemux *m_Remux;
+ protected:
+ public:
+   cStreamDevice(void);
+@@ -47,6 +47,7 @@
+   void Del(int Count) { m_Remux->DelOutput(Count); }
+   void ClearOutput() { m_Remux->ClearOutput(); }
+   int Available(void) { return m_Remux->Available(); }
++  int Free(void) { return m_Remux->Free(); }
+ };
+ 
+ #endif
+
+Modified: trunk/tools/socket.c
+===================================================================
+--- trunk/tools/socket.c	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/tools/socket.c	2007-01-16 22:57:40 UTC (rev 25)
+@@ -8,7 +8,8 @@
+ #include <errno.h>
+ #include <fcntl.h>
+ 
+-#define UDP_TX_BUF_SIZE ((188*7+3)*20)
++#define UDP_TX_BUF_SIZE (188*348)
++//#define TCP_TX_BUF_SIZE (1024 * 30)
+ 
+ cTBSocket::cTBSocket(int Type) {
+ 	memset(&m_LocalAddr, 0, sizeof(m_LocalAddr));
+@@ -21,7 +22,7 @@
+ }
+ 
+ bool cTBSocket::OpenUDP(const std::string &Host, unsigned int Port) {
+-	int socket, tmp;
++	int socket;
+ 	struct sockaddr_in my_addr;
+ 
+ 	if (IsOpen()) Close();
+@@ -36,16 +37,18 @@
+ 	my_addr.sin_family = AF_INET;
+ 	my_addr.sin_port = htons(Port);
+ 	my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+-		    
++
++	/* limit the tx buf size to limit latency */
++#ifdef UDP_TX_BUF_SIZE
++	int tmp = UDP_TX_BUF_SIZE;
++	if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char*)&tmp, sizeof(tmp)) < 0)
++	    goto closefd;
++#endif
++
+ /*	tmp = 1;
+ 	if (setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, (char*)&tmp, sizeof(tmp)) < 0)
+ 	    goto closefd;*/
+ 		    
+-	/* limit the tx buf size to limit latency */
+-	tmp = UDP_TX_BUF_SIZE;
+-	if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char*)&tmp, sizeof(tmp)) < 0)
+-	    goto closefd;
+-
+ 	/* the bind is needed to give a port to the socket now */
+ /*	if (bind(socket,(struct sockaddr *)&my_addr, sizeof(my_addr)) < 0) 
+ 	    goto closefd;*/
+@@ -108,6 +111,13 @@
+ 	if ((socket = ::socket(PF_INET, m_Type, IPPROTO_IP)) == -1)
+ 		return false;
+ 
++	/* limit the tx buf size to limit latency */
++#ifdef TCP_TX_BUF_SIZE
++	int tmp = TCP_TX_BUF_SIZE;
++	if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char*)&tmp, sizeof(tmp)) < 0)
++	    goto closefd;
++#endif
++
+ 	val = 1;
+ 	if (::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) == -1)
+ 		goto closefd; //return false;
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/tsworker.c	2007-01-16 22:57:40 UTC (rev 25)
+@@ -4,7 +4,7 @@
+  * See the README file for copyright information and how to reach the author.
+  *
+  */
+- 
++
+ #include <sys/time.h>
+ 
+ #include <vdr/tools.h>
+@@ -17,9 +17,11 @@
+ 
+ #define TS_PACKET_SIZE (188)
+ #define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
+-#define UDP_MAX_BITRATE 7000000
++#define UDP_MAX_BITRATE 8112832
+ #define UDP_SEND_INTERVALL 1000
++#define TCP_SEND_SIZE (1024 * 10)
+ 
++// 8388608 = 8MBit
+ struct TSData
+ {
+ 	char packNr;
+@@ -188,6 +190,7 @@
+ 				m_StreamDevice->LockOutput();
+       				uchar *buffer = m_StreamDevice->Get(count);
+ 				if (buffer!=NULL) {
++				   count = (count > TCP_SEND_SIZE) ? TCP_SEND_SIZE : count;
+ 					int available = count;
+ 					int done      = 0;
+ 					int written   = 0;
+@@ -225,15 +228,16 @@
+ 					bytessend += count;
+ 					if (curtime.tv_sec > oldtime.tv_sec + 10)
+ 					{
+-						double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
+-							- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
++						double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 
++							- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;
+ 						double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
++						int bufstat = m_StreamDevice->Available() * 100 / (m_StreamDevice->Available() + m_StreamDevice->Free()); 
+ #ifdef DEBUG
+-						fprintf(stderr, "[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n",
+-							rate, bytessend - oldbytessend);
++						fprintf(stderr, "[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send, %d%% Buffer used\n",
++							rate, bytessend - oldbytessend, bufstat);
+ #endif						
+-						dsyslog("[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n",
+-							rate, bytessend - oldbytessend);
++						dsyslog("[ffnetdev] Streamer: Rate %2.3f MBit/Sec, %d Bytes send, %d%% Buffer used\n",
++							rate, bytessend - oldbytessend, bufstat);
+ 						
+ 						oldbytessend = bytessend;
+ 						oldtime = curtime;
+@@ -337,12 +341,13 @@
+ 				int written   = 0;
+ 				char data[100];
+ 				int  rcvCount;
++				int sleepTime;
+ 
+-				rcvCount=m_StreamClient.Read(data, 10);
++			/*	rcvCount=m_StreamClient.Read(data, 10);
+ 				if (rcvCount > 0)
+ 				{
+ 					isyslog("[ffnetdev] Streamer: empfangen:%d Bytes\n", rcvCount);
+-				}
++				}*/
+ 
+ 				if (oldPacketTime == 0)
+ 					oldPacketTime = get_time()- UDP_SEND_INTERVALL;
+@@ -350,52 +355,21 @@
+ 				while ((available > 0) && (have_Streamclient == true) &&
+ 					   (!close_Streamclient_request))
+ 				{
+-					while ((tsData.packsCount * TS_PACKET_SIZE < UDP_PACKET_SIZE) && (available > 0))
+-					{
+-						int moveCount = (available >= TS_PACKET_SIZE) ?  TS_PACKET_SIZE : available;
+-						moveCount = (moveCount + restData >= TS_PACKET_SIZE) ?  TS_PACKET_SIZE - restData : moveCount;
+-						memcpy(&tsData.data[(tsData.packsCount * TS_PACKET_SIZE) + restData], &buffer[done], moveCount);
+-						available -= moveCount;
+-						done += moveCount;
+-						if (restData + moveCount == TS_PACKET_SIZE)
+-						{
+-							char *data = &tsData.data[tsData.packsCount * TS_PACKET_SIZE];
+-							for (int i = 0; i < 4; i++)
+-							{	
+-								tsData.tsHeaderCRC += (char)*(data + i);
+-							}
+-							restData = 0;
+-							tsData.packsCount ++;
+-						}
+-						else
+-						{
+-							restData = moveCount;
+-							continue;
+-						}
+-					}
++					while ((sleepTime = oldPacketTime + UDP_SEND_INTERVALL - get_time()) > 0)
++						usleep(sleepTime);
+ 
+-					if (restData > 0)
+-						continue;
+-
+-					while (get_time() < oldPacketTime + UDP_SEND_INTERVALL)
+-						cCondWait::SleepMs(1);
+-
+ 					if (toSend == 0)
+ 						toSend = (long)(UDP_MAX_BITRATE * (((double)get_time() - oldPacketTime) / 1000000) / 8);
+ 					
+-					int sendcount = tsData.packsCount * TS_PACKET_SIZE + 3;
+-					if (toSend < sendcount)
+-					{
+-						toSend = 0;
+-						oldPacketTime = get_time();
+-						continue;
+-					}
++					int sendcount = (available > toSend) ? toSend : available;
++					sendcount = (sendcount > UDP_PACKET_SIZE) ? UDP_PACKET_SIZE : sendcount;
+ 
+-					char* pTsData = (char*)&tsData;
++					available -= sendcount;
++
+ 					while ((sendcount > 0) && (have_Streamclient == true) &&
+ 					   (!close_Streamclient_request))
+ 					{
+-						if (((written=m_StreamClient.Write(pTsData, sendcount)) < 0) && 
++						if (((written=m_StreamClient.Write(&buffer[done], sendcount)) < 0) && 
+ 							(errno != EAGAIN)) 
+ 						{
+ 							isyslog("[ffnetdev] Streamer: Couldn't send data: %d %s Len:%d\n", errno, strerror(errno), sendcount);
+@@ -404,22 +378,17 @@
+ 						
+ 						if (written > 0)
+ 						{
++							done += written;
+ 							sendcount -= written;
+-							pTsData   += written;
+ 							toSend	  -= written;
++							if (toSend == 0)
++								oldPacketTime = get_time();
+ 						}
+ 						else
+ 						{
+ 							cCondWait::SleepMs(5);
+ 						}
+ 					}
+-
+-					if (sendcount == 0)
+-					{
+-						tsData.packsCount = 0;
+-						tsData.tsHeaderCRC = 0;
+-						tsData.packNr ++;
+-					}
+ 				}
+ 				m_StreamDevice->Del(count);
+ 
+@@ -432,10 +401,10 @@
+ 				}
+ 					
+ 				bytessend += count;
+-				if (curtime.tv_sec > oldtime.tv_sec + 10)
++				if (curtime.tv_sec > oldtime.tv_sec + 3)
+ 				{
+-					double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
+-						- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
++					double secs = (curtime.tv_sec * 1000 + ((double)curtime.tv_usec / 1000.0)) / 1000 
++						- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;
+ 					double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
+ #ifdef DEBUG
+ 					fprintf(stderr, "[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n",
+
+
+
+From zwer at mail.berlios.de  Wed Jan 24 00:46:42 2007
+From: zwer at mail.berlios.de (zwer at mail.berlios.de)
+Date: Wed, 24 Jan 2007 00:46:42 +0100
+Subject: [Ffnetdev-svncheckins] r26 - in trunk: . tools
+Message-ID: <200701232346.l0NNkgtT030103@sheep.berlios.de>
+
+Author: zwer
+Date: 2007-01-24 00:46:34 +0100 (Wed, 24 Jan 2007)
+New Revision: 26
+
+Modified:
+   trunk/Makefile
+   trunk/ffnetdev.c
+   trunk/ffnetdev.h
+   trunk/streamdevice.c
+   trunk/streamdevice.h
+   trunk/tools/socket.c
+   trunk/tsworker.c
+   trunk/tsworker.h
+Log:
+- streamen bis ca. 6.6Mbit/s PES problemlos
+
+Modified: trunk/Makefile
+===================================================================
+--- trunk/Makefile	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/Makefile	2007-01-23 23:46:34 UTC (rev 26)
+@@ -53,8 +53,8 @@
+ 
+ SERVEROBJS = $(PLUGIN).o \
+ 	\
+-	ffnetdev.o ffnetdevsetup.o osdworker.o tsworker.o netosd.o streamdevice.o pes2ts.o remote.o \
+-	vncEncodeRRE.o vncEncodeCoRRE.o vncEncodeHexT.o \
++	ffnetdev.o ffnetdevsetup.o osdworker.o tsworker.o clientcontrol.o netosd.o streamdevice.o \
++	pes2ts.o remote.o vncEncodeRRE.o vncEncodeCoRRE.o vncEncodeHexT.o \
+ 	vncEncoder.o translate.o \
+ 		
+ ifdef DEBUG
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/ffnetdev.c	2007-01-23 23:46:34 UTC (rev 26)
+@@ -17,6 +17,7 @@
+ #include "streamdevice.h"
+ #include "remote.h"
+ #include "osdworker.h"
++#include "clientcontrol.h"
+ #include "config.h"
+ #include "ffnetdevsetup.h"
+ 
+@@ -57,6 +58,7 @@
+   // VDR OBJECTS TO EXIST OR PRODUCE ANY OUTPUT!
+   TSPort = STREAMPORT;
+   OSDPort = OSDPORT;
++  ControlPort = CONTROLPORT;
+   EnableRemote = false;
+   m_origPrimaryDevice = -1;
+   m_Remote = NULL;
+@@ -68,6 +70,7 @@
+ {
+   cOSDWorker::Exit();
+   cTSWorker::Exit();
++  cClientControl::Exit();
+   
+   delete m_Remote;
+ }
+@@ -78,6 +81,7 @@
+   return 
+   "  -t PORT, --tsport PORT      port number for sending TS to.\n"
+   "  -o PORT, --osdport PORT     listen on this port for OSD connect.\n"
++  "  -c PORT, --controlport PORT listen on this port for ClientControl connect.\n"
+   "  -e 			 enable remote control over OSD connection.\n"
+   "\n";
+ }
+@@ -89,12 +93,13 @@
+   static struct option long_options[] = {
+       { "tsport",    		required_argument	, NULL, 't' },
+       { "osdport",   		required_argument	, NULL, 'o' },
++      { "controlport",   	required_argument	, NULL, 'c' },
+       { "enable-remote",   	no_argument		, NULL, 'e' },
+       { NULL, 			0			, NULL, 0 }
+   };
+ 
+   int c;
+-  while ((c = getopt_long(argc, argv, "t:o:e", long_options, NULL)) != -1) {
++  while ((c = getopt_long(argc, argv, "t:o:c:e", long_options, NULL)) != -1) {
+         switch (c) {
+           case 'e': EnableRemote = true;
+ 		    dsyslog("[ffnetdev] Remote enabled\n");
+@@ -121,6 +126,17 @@
+                     esyslog("[ffnetdev] invalid port number: %s\n", optarg);
+                     return 2;
+                     break;
++          case 'c': if (isnumber(optarg)) {
++                       int n = atoi(optarg);
++                       if (0 < n && n < 65536) {
++                          ControlPort = n;
++                          dsyslog("[ffnetdev] ClientControl Port: %d\n", n);
++                          break;
++                       }
++                    }
++                    esyslog("[ffnetdev] invalid port number: %s\n", optarg);
++                    return 2;
++                    break;
+ 	  default : return 2;
+ 	}
+   }
+@@ -131,14 +147,14 @@
+ #if VDRVERSNUM >= 10347
+ cString cPluginFFNetDev::Active(void) {
+ 
+-    if(cOSDWorker::Active() || cTSWorker::Active())
++    if(cOSDWorker::Active() || cTSWorker::Active() || cClientControl::Active())
+            return tr("ffnetdev is running");
+  
+     return NULL;
+ }
+ #else
+ bool cPluginFFNetDev::Active(void) {
+-    return (cOSDWorker::Active() || cTSWorker::Active());
++    return (cOSDWorker::Active() || cTSWorker::Active() || cClientControl::Active());
+ }
+ #endif
+ 
+@@ -150,6 +166,7 @@
+   	  
+   cOSDWorker::Init(OSDPort, this);
+   cTSWorker::Init(m_StreamDevice, TSPort, this);
++  cClientControl::Init(ControlPort, this);
+  
+   return true;
+ }
+
+Modified: trunk/ffnetdev.h
+===================================================================
+--- trunk/ffnetdev.h	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/ffnetdev.h	2007-01-23 23:46:34 UTC (rev 26)
+@@ -13,6 +13,7 @@
+ 
+ #define OSDPORT 20001
+ #define STREAMPORT 20002
++#define CONTROLPORT 20005
+ 
+ class cPluginFFNetDev : public cPlugin {
+ private:
+@@ -23,8 +24,9 @@
+ 	cMyRemote *m_Remote;
+ 	int OSDPort;
+ 	int TSPort;
++	int ControlPort;
+ 	bool EnableRemote;
+-	int  m_origPrimaryDevice;
++	int  m_origPrimaryDevice;	
+ 	
+ public:
+   cPluginFFNetDev(void);
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/streamdevice.c	2007-01-23 23:46:34 UTC (rev 26)
+@@ -9,12 +9,14 @@
+ #include "osdworker.h"
+ #include "tsworker.h"
+ #include "netosd.h"
++#include "vdr/player.h"
+ 
+ cStreamDevice::cStreamDevice(void)
+ {
+     dsyslog("[ffnetdev] Device: Constructor cStreamDevice \n");
+     //m_Remux = new cPES2TSRemux(TS_VPID, TS_APID);   
+-    m_Remux = new cPES2PESRemux();   
++    m_Remux = new cPES2PESRemux();  
++    m_Playing = false; 
+ }
+ 
+ cStreamDevice::~cStreamDevice(void)
+@@ -52,6 +54,17 @@
+    m_Remux->ClearInput();
+    m_Remux->ClearOutput();
+    m_Remux->PlayModeChange();
++   cControl *pControl = cControl::Control();
++   if (pControl)
++   {
++      bool Forward;
++      int Speed;
++      pControl->GetReplayMode(m_Playing, Forward, Speed);
++   }
++   else
++   {
++      m_Playing = false;
++   }
+    return true;
+ }
+ 
+@@ -114,7 +127,8 @@
+ {
+    if (cTSWorker::HaveStreamClient()) 
+    {
+-       while ((m_Remux->InputFree() < Length) && cTSWorker::HaveStreamClient())
++       while (((m_Remux->InputFree() < Length) && (!m_Playing) ||
++               (m_Remux->Available() > TCP_SEND_SIZE * 10) && (m_Playing)) && cTSWorker::HaveStreamClient())
+            cCondWait::SleepMs(1);
+        int result=m_Remux->Put(Data, Length);
+        if (result!=Length) {
+@@ -144,7 +158,8 @@
+    if (cTSWorker::HaveStreamClient()) 
+    {
+ 
+-       while ((m_Remux->InputFree() < Length) && cTSWorker::HaveStreamClient())
++       while (((m_Remux->InputFree() < Length) && (!m_Playing) ||
++               (m_Remux->Available() > TCP_SEND_SIZE * 10) && (m_Playing)) && cTSWorker::HaveStreamClient())
+            cCondWait::SleepMs(1);
+        int result=m_Remux->Put(Data, Length);
+        if (result!=Length) {
+
+Modified: trunk/streamdevice.h
+===================================================================
+--- trunk/streamdevice.h	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/streamdevice.h	2007-01-23 23:46:34 UTC (rev 26)
+@@ -18,6 +18,7 @@
+ class cStreamDevice: public cDevice {
+ private:
+ 	  cPESRemux *m_Remux;
++	  bool       m_Playing;
+ protected:
+ public:
+   cStreamDevice(void);
+
+Modified: trunk/tools/socket.c
+===================================================================
+--- trunk/tools/socket.c	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/tools/socket.c	2007-01-23 23:46:34 UTC (rev 26)
+@@ -9,7 +9,7 @@
+ #include <fcntl.h>
+ 
+ #define UDP_TX_BUF_SIZE (188*348)
+-//#define TCP_TX_BUF_SIZE (1024 * 30)
++//#define TCP_TX_BUF_SIZE (1024 * 60)
+ 
+ cTBSocket::cTBSocket(int Type) {
+ 	memset(&m_LocalAddr, 0, sizeof(m_LocalAddr));
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/tsworker.c	2007-01-23 23:46:34 UTC (rev 26)
+@@ -19,7 +19,6 @@
+ #define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
+ #define UDP_MAX_BITRATE 8112832
+ #define UDP_SEND_INTERVALL 1000
+-#define TCP_SEND_SIZE (1024 * 10)
+ 
+ // 8388608 = 8MBit
+ struct TSData
+@@ -101,12 +100,12 @@
+ 	m_Active		= true;
+ 	have_Streamclient	= false;
+ 
+-        if (!m_StreamListen.Listen(m_ListenIp, m_StreamListenPort, 1)) { // ToDo JN place to allow more connections/clients!
++   if (!m_StreamListen.Listen(m_ListenIp, m_StreamListenPort, 1)) { // ToDo JN place to allow more connections/clients!
+ 		esyslog("[ffnetdev] Streamer: Couldn't listen %s:%d: %s", m_ListenIp, m_StreamListenPort, strerror(errno));
+ 		m_Active = false;
+ 	} 
+ 	else
+-	        isyslog("[ffnetdev] Streamer: Listening on port %d", m_StreamListenPort);
++      isyslog("[ffnetdev] Streamer: Listening on port %d", m_StreamListenPort);
+ 
+ 	while (m_Active) {
+ 		select.Clear();
+
+Modified: trunk/tsworker.h
+===================================================================
+--- trunk/tsworker.h	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/tsworker.h	2007-01-23 23:46:34 UTC (rev 26)
+@@ -18,7 +18,9 @@
+ 
+ typedef unsigned long long u64;
+ 
++#define TCP_SEND_SIZE (1024 * 20)
+ 
++
+ // --- cTSWorker -------------------------------------------------------------
+ 
+ class cTSWorker : public cThread {
+
+
+
+From zwer at mail.berlios.de  Wed Jan 31 00:31:05 2007
+From: zwer at mail.berlios.de (zwer at mail.berlios.de)
+Date: Wed, 31 Jan 2007 00:31:05 +0100
+Subject: [Ffnetdev-svncheckins] r27 - trunk
+Message-ID: <200701302331.l0UNV5rs027448@sheep.berlios.de>
+
+Author: zwer
+Date: 2007-01-31 00:30:54 +0100 (Wed, 31 Jan 2007)
+New Revision: 27
+
+Added:
+   trunk/clientcontrol.c
+   trunk/clientcontrol.h
+Modified:
+   trunk/ffnetdev.c
+   trunk/ffnetdev.h
+   trunk/pes2ts.c
+   trunk/pes2ts.h
+   trunk/streamdevice.c
+   trunk/streamdevice.h
+   trunk/tsworker.c
+Log:
+- ClientControl eingef?\195?\188hrt
+
+Added: trunk/clientcontrol.c
+===================================================================
+--- trunk/clientcontrol.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/clientcontrol.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -0,0 +1,227 @@
++/* 
++ * tsworker.c: ts streaming worker thread
++ *
++ * See the README file for copyright information and how to reach the author.
++ *
++ */
++
++#include <sys/time.h>
++
++#include <vdr/tools.h>
++
++#include "tools/socket.h"
++#include "tools/select.h"
++
++#include "clientcontrol.h"
++#include "config.h"
++
++
++//////////////////////////////////////////////////////////////////////////////////////////////////
++//////////////////////////////////////////////////////////////////////////////////////////////////
++
++cClientControl *cClientControl::m_Instance = NULL;
++
++cClientControl::cClientControl(void)
++		: cThread("[ffnetdev] ClientControl")
++{
++	m_Active = false;	
++	m_ClientSocket = NULL;
++}
++
++cClientControl::~cClientControl() 
++{
++	if (m_Active) 
++	   Stop();
++	delete m_ClientSocket;
++}
++
++void cClientControl::Init(int iPort, cPluginFFNetDev *pPlugin) 
++{
++	if (m_Instance == NULL) 
++	{
++		m_Instance = new cClientControl;
++		m_Instance->m_pPlugin = pPlugin;
++		m_Instance->m_iPort = iPort;
++		m_Instance->Start();
++		m_Instance->m_bCloseClientRequest = false;
++		m_Instance->m_bPlayStateReq = false;
++	}
++}
++
++void cClientControl::Exit(void) 
++{
++	if (m_Instance != NULL) 
++	{
++		m_Instance->Stop();
++		DELETENULL(m_Instance);
++	}
++}
++
++void cClientControl::Stop(void)
++{
++	m_Active = false;
++	Cancel(3);
++}
++
++void cClientControl::CloseStreamClient(void) 
++{
++	m_Instance->m_bCloseClientRequest = true;
++#ifdef DEBUG
++	fprintf(stderr, "[ffnetdev] Streamer: Closing of ClientControl client socket requested.\r\n");
++#endif
++}
++
++void cClientControl::Action(void) 
++{
++	cTBSelect select;
++	cTBSocket m_StreamListen;
++	int ret;
++   
++	const char* m_ListenIp = "0.0.0.0";
++	uint iPort = m_iPort;
++
++	m_ClientSocket 	= new cTBSocket;
++
++	m_Active		= true;
++	m_bHaveClient	= false;
++
++   if (!m_StreamListen.Listen(m_ListenIp, iPort, 1)) { // ToDo JN place to allow more connections/clients!
++		esyslog("[ffnetdev] ClientControl: Couldn't listen %s:%d: %s", m_ListenIp, iPort, strerror(errno));
++		m_Active = false;
++	} 
++	else
++      isyslog("[ffnetdev] ClientControl: Listening on port %d", iPort);
++
++	while (m_Active) {
++		select.Clear();
++		
++		if (m_bHaveClient==false)
++			select.Add(m_StreamListen, false);
++		else {
++			select.Add(*m_ClientSocket, true);  //select for writing fd
++			select.Add(*m_ClientSocket, false);	//select for reading fd
++		}
++
++		int numfd;
++		/* React on status change of any of the above file descriptor */
++		if ((numfd=select.Select(1000)) < 0) {
++			if (!m_Active) // Exit was requested while polling
++				continue;
++			esyslog("[ffnetdev] ClientControl: Fatal error, ffnetdev exiting: %s", strerror(errno));
++			m_Active = false;
++			continue;
++		}
++		
++		
++		/* Accept connecting	*/
++		if ( (m_bHaveClient==false)&&select.CanRead(m_StreamListen) ) {
++			if (m_ClientSocket->Accept(m_StreamListen)) {
++				isyslog("[ffnetdev] ClientControl: Accepted client %s:%d",
++					m_ClientSocket->RemoteIp().c_str(), m_ClientSocket->RemotePort());
++				m_bHaveClient = true;
++			} 
++			else {
++				esyslog("[ffnetdev] Streamer: Couldn't accept : %s", strerror(errno));
++				m_bHaveClient = false;
++				m_Active = false;
++				continue;
++			}
++		}
++
++		
++		/* Check for closed client connection */		
++		if (m_bHaveClient==true) { 
++			if (m_bCloseClientRequest==true) {
++				m_bCloseClientRequest = false;
++				m_bHaveClient = false;
++				
++				if ( m_ClientSocket->Close() ) {
++#ifdef DEBUG
++					fprintf(stderr, "[ffnetdev] ClientControl: Client socket closed successfully.\n");
++#endif
++					isyslog("[ffnetdev] ClientControl: Connection closed: client %s:%d",
++						 m_ClientSocket->RemoteIp().c_str(), m_ClientSocket->RemotePort());
++				}
++				else
++					{
++#ifdef DEBUG
++					   fprintf(stderr, "[ffnetdev] ClientControl: Error closing client socket.\n");
++#endif
++					   esyslog("[ffnetdev] ClientControl: Error closing connection.");
++					   m_Active=false;
++					   continue;
++					} 
++					  
++			}
++			
++			if ( select.CanWrite(*m_ClientSocket) ) 
++			{
++			
++			}
++			
++			if ( select.CanRead(*m_ClientSocket) )
++			{
++			   SClientControl data;
++			   SClientControlInfo info;
++			   
++			   if ( (ret = m_ClientSocket->Read(&data, sizeof(data))) == sizeof(data)) 
++			   {
++			      switch (data.pakType)
++			      {
++			      case ptInfo: 
++			         if (m_ClientSocket->Read(&info, data.dataLen) == data.dataLen)
++                     m_pPlugin->SetClientName(info.clientName);			         
++                  dsyslog("clientName %s, data.dataLen %d %d", info.clientName, data.dataLen, sizeof(data));
++			         break;
++			      
++			      case ptPlayStateReq: 
++			         m_bPlayStateReq = true;
++			         break;
++			         
++			      default:
++			         break;
++			      }
++			   }
++			   else if (ret == 0)
++   			{
++   			   CloseStreamClient();
++   			}
++		   }
++		} 
++
++		cCondWait::SleepMs(3);
++
++	} // while(m_Active)
++
++}
++
++
++bool cClientControl::SendPlayState(ePlayMode PlayMode, bool bPlay, bool bForward, int iSpeed) 
++{
++   SClientControl data;
++   SClientControlPlayState state;
++       
++   int ret;
++   
++   if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL))
++      return false;
++
++   m_Instance->m_bPlayStateReq = false;
++
++   state.PlayMode = PlayMode;
++   state.Play = bPlay;
++   state.Forward = bForward;
++   state.Speed = iSpeed;
++   
++   data.pakType = ptPlayState;
++   data.dataLen = sizeof(state);
++   if ((ret = m_Instance->m_ClientSocket->Write(&data, sizeof(data))) == sizeof(data))
++   {
++      if ((ret = m_Instance->m_ClientSocket->Write(&state, sizeof(state))) == sizeof(state))
++         return true;
++      else
++         return false;
++   }
++   else
++      return false;
++}
+
+Added: trunk/clientcontrol.h
+===================================================================
+--- trunk/clientcontrol.h	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/clientcontrol.h	2007-01-30 23:30:54 UTC (rev 27)
+@@ -0,0 +1,77 @@
++/*
++ * clientcontrol.h: ClientControl thread 
++ *
++ * See the README file for copyright information and how to reach the author.
++ *
++ */
++
++#ifndef _CLIENTCONTROL__H
++#define _CLIENTCONTROL__H
++
++#include <vdr/thread.h>
++
++#include "tools/socket.h"
++#include "ffnetdev.h"
++
++enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq };
++
++struct SClientControl
++{
++   char pakType;
++   char dataLen;
++   char data[0];
++};
++
++struct SClientControlInfo
++{
++   char clientName[20];
++};
++
++struct SClientControlPlayState
++{
++   char PlayMode;
++   bool Play;
++   bool Forward;
++   char Speed;
++};
++
++
++// --- cClientControl -------------------------------------------------------------
++
++class cClientControl : public cThread {
++private:
++	bool m_Active;
++	bool m_bHaveClient;
++	bool m_bCloseClientRequest;
++	static cClientControl *m_Instance;
++	cTBSocket *m_ClientSocket;
++	int m_iPort;
++	cPluginFFNetDev *m_pPlugin;
++	bool m_bPlayStateReq;
++
++protected:
++	virtual void Action(void);
++	void Stop(void);
++public:
++	cClientControl(void);
++	virtual ~cClientControl();
++
++	static void Init(int, cPluginFFNetDev*);
++	static void Exit(void);
++	static bool Active(void);
++	
++	static bool HaveClient(void);
++	static void CloseStreamClient(void);
++	
++	static bool SendPlayState(ePlayMode PlayMode, bool bPlay, bool bForward, int iSpeed);
++	static bool PlayStateReq(void) { return m_Instance->m_bPlayStateReq; };
++};
++
++inline bool cClientControl::Active(void) {
++    return m_Instance && (m_Instance->m_bHaveClient==true);
++}
++
++inline bool cClientControl::HaveClient(void) {
++	return m_Instance->m_bHaveClient;
++}
++#endif
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/ffnetdev.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -211,60 +211,82 @@
+ 
+ void cPluginFFNetDev::SetPrimaryDevice()
+ {	
+-    int i = 0;
+-    while ((cOsd::IsOpen() > 0) && (i-- > 0))
+-	cRemote::Put(kBack);
+-	
+-    if ((config.iAutoSetPrimaryDVB == 1) && (m_origPrimaryDevice == -1))
+-    {
+-        cDevice *PrimaryDevice;
+-        if ((PrimaryDevice = cDevice::PrimaryDevice()) != NULL)
+-    	    m_origPrimaryDevice = PrimaryDevice->DeviceNumber() + 1;
+-	else
+-	    m_origPrimaryDevice = -1;
+-	    
+-	if (m_StreamDevice->DeviceNumber() + 1 != m_origPrimaryDevice)
+-	{
+-	    cDevice::SetPrimaryDevice(m_StreamDevice->DeviceNumber() + 1);
+-	    isyslog("[ffnetdev] set Primary Device to %d", m_StreamDevice->DeviceNumber() + 1);
+-	}
+-	else
+-	{
+-	    m_origPrimaryDevice = -1;
+-	}
+-    }
+-    
+-    if(EnableRemote) 
+-    {
+-	if (m_Remote == NULL)
+-	    m_Remote = new cMyRemote("ffnetdev");
+-	    
+-	if (!cRemote::HasKeys())
+-	    new cLearningThread();
+-	dsyslog("[ffnetdev] remote control enabled.\n");
+-    }
+-    else 
+-    {
+-	dsyslog("[ffnetdev] remote control disabled.\n");
+-    }
++   int i = 0;
++   while ((cOsd::IsOpen() > 0) && (i-- > 0))
++   cRemote::Put(kBack);
++   
++   if ((config.iAutoSetPrimaryDVB == 1) && (m_origPrimaryDevice == -1))
++   {
++      cDevice *PrimaryDevice;
++      if ((PrimaryDevice = cDevice::PrimaryDevice()) != NULL)
++         m_origPrimaryDevice = PrimaryDevice->DeviceNumber() + 1;
++      else
++         m_origPrimaryDevice = -1;
++      
++      if (m_StreamDevice->DeviceNumber() + 1 != m_origPrimaryDevice)
++      {
++         cDevice::SetPrimaryDevice(m_StreamDevice->DeviceNumber() + 1);
++         isyslog("[ffnetdev] set Primary Device to %d", m_StreamDevice->DeviceNumber() + 1);
++      }
++      else
++      {
++         m_origPrimaryDevice = -1;
++      }
++   }
++   
++   if(EnableRemote) 
++   {
++      if (m_Remote == NULL)
++      {
++         char str[30];
++         if (strlen(m_ClientName) > 0)
++            sprintf(str, "ffnetdev-%s", m_ClientName);
++         else
++            strcpy(str, "ffnetdev");
++         
++         m_Remote = new cMyRemote(str);
++      }
++   
++      if (!cRemote::HasKeys())
++         new cLearningThread();
++      dsyslog("[ffnetdev] remote control enabled.\n");
++   }
++   else 
++   {
++      dsyslog("[ffnetdev] remote control disabled.\n");
++   }
+ }
+ 
+ 
+ void cPluginFFNetDev::RestorePrimaryDevice()
+ {
+-    int i = 10;
+-    while ((cOsd::IsOpen() > 0) && (i-- > 0))
+-	cRemote::Put(kBack);
++   int i = 10;
++   while ((cOsd::IsOpen() > 0) && (i-- > 0))
++      cRemote::Put(kBack);
++   
++   dsyslog("[ffnetdev] remote control disabled.\n");
++   
++   if (m_origPrimaryDevice != -1)
++   {
++      cDevice::SetPrimaryDevice(m_origPrimaryDevice);
++      isyslog("[ffnetdev] restore Primary Device to %d", m_origPrimaryDevice);
++      m_origPrimaryDevice = -1;
++      sleep(5);
++   }					
++   
++   m_ClientName[0] = '\0';
++   if (m_Remote)
++   {
++      Remotes.Del(m_Remote);
++      m_Remote = NULL;
++   }
++   dsyslog("[ffnetdev] -------------------\n");
++}
+ 
+-    dsyslog("[ffnetdev] remote control disabled.\n");
+-    
+-    if (m_origPrimaryDevice != -1)
+-    {
+-        cDevice::SetPrimaryDevice(m_origPrimaryDevice);
+-        isyslog("[ffnetdev] restore Primary Device to %d", m_origPrimaryDevice);
+-        m_origPrimaryDevice = -1;
+-        sleep(5);
+-    }					
++void cPluginFFNetDev::SetClientName(char* ClientName)
++{
++   strcpy(m_ClientName, ClientName);
++   dsyslog("[ffnetdev] SetClientname %s", m_ClientName);
+ }
+ 
+ 
+
+Modified: trunk/ffnetdev.h
+===================================================================
+--- trunk/ffnetdev.h	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/ffnetdev.h	2007-01-30 23:30:54 UTC (rev 27)
+@@ -27,6 +27,7 @@
+ 	int ControlPort;
+ 	bool EnableRemote;
+ 	int  m_origPrimaryDevice;	
++	char m_ClientName[20];
+ 	
+ public:
+   cPluginFFNetDev(void);
+@@ -57,6 +58,7 @@
+   void SetPrimaryDevice();
+   void RestorePrimaryDevice();
+   cMyRemote *GetRemote() { return m_Remote; }
++  void SetClientName(char* ClientName);
+ };
+ 
+ #endif
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/pes2ts.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -39,8 +39,7 @@
+ cPES2TSRemux::cPES2TSRemux(int VPid, int APid): cPESRemux(INPUTBUFSIZE, IPACKS),
+     cThread("[ffnetdev] PES2TS remux"),
+     m_OutputBuffer(new cRingBufferLinear(OUTPUTBUFSIZE, TS_SIZE * 2)),
+-    m_Active(false),
+-    m_PlayModeChanged(false)
++    m_Active(false)
+ {
+   vpid = VPid;
+   apid = APid;
+@@ -73,12 +72,6 @@
+ //    fprintf(stderr, "[ffnetdev] Remuxer: Inputbuffersize: %d, Outputbuffersize: %d\n", 
+ //	    m_InputBuffer->Available(), m_OutputBuffer->Available());
+ 
+-    if (m_PlayModeChanged)
+-    {
+-	   cCondWait::SleepMs(1500);
+-	   m_PlayModeChanged = false;
+-    }
+-
+     if (m_InputBuffer->Available() < (int)IPACKS*10) {	
+ 	cCondWait::SleepMs(5);
+ 	continue;
+
+Modified: trunk/pes2ts.h
+===================================================================
+--- trunk/pes2ts.h	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/pes2ts.h	2007-01-30 23:30:54 UTC (rev 27)
+@@ -40,8 +40,6 @@
+    virtual void ClearOutput() = 0;
+    void LockOutput()   { while (OutputLocked) cCondWait::SleepMs(1); OutputLocked = true; }
+    void UnlockOutput() { OutputLocked = false; }
+-	virtual void PlayModeChange() {}; 
+-   
+ };
+ 
+ class cPES2TSRemux: public cPESRemux, cThread {
+@@ -50,7 +48,6 @@
+ 	bool               m_Active;
+ 	unsigned short	   vpid;
+ 	unsigned short	   apid;
+-	bool 		   m_PlayModeChanged;
+   
+ protected:
+ 	virtual void Action(void);
+@@ -65,8 +62,6 @@
+ 	uchar *Get(int &Count) { return  m_OutputBuffer->Get(Count); }
+ 	void DelOutput(int Count) { m_OutputBuffer->Del(Count); }
+ 	void ClearOutput() { LockOutput(); m_OutputBuffer->Clear(); UnlockOutput(); }
+-	void PlayModeChange() { m_PlayModeChanged = true; } 
+-	
+ };
+ 
+ class cPES2PESRemux: public cPESRemux {
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/streamdevice.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -5,11 +5,12 @@
+  *
+  */
+  
++#include "vdr/player.h"
+ #include "streamdevice.h"
+ #include "osdworker.h"
+ #include "tsworker.h"
+ #include "netosd.h"
+-#include "vdr/player.h"
++#include "clientcontrol.h"
+ 
+ cStreamDevice::cStreamDevice(void)
+ {
+@@ -17,6 +18,8 @@
+     //m_Remux = new cPES2TSRemux(TS_VPID, TS_APID);   
+     m_Remux = new cPES2PESRemux();  
+     m_Playing = false; 
++    m_PlayState = psPlay;
++    m_PlayMode  = pmNone;
+ }
+ 
+ cStreamDevice::~cStreamDevice(void)
+@@ -51,42 +54,70 @@
+ {
+    dsyslog("[ffnetdev] Device: Setting playmode. Mode: %d\n",PlayMode);
+    cOSDWorker::SendPlayMode(PlayMode);
+-   m_Remux->ClearInput();
+-   m_Remux->ClearOutput();
+-   m_Remux->PlayModeChange();
++      
++   m_PlayMode = PlayMode;
++   if (PlayMode == pmNone)
++   {
++      m_PlayState = psBufferReset;
++      m_Remux->ClearInput();
++      m_Remux->ClearOutput();
++   }
++   else
++   {
++      while (((m_PlayState == psBufferReset) || (m_PlayState == psBufferReseted)) && 
++             (!cClientControl::PlayStateReq()) && (cTSWorker::HaveStreamClient()))
++         cCondWait::SleepMs(10);
++      dsyslog("[ffnetdev] PlayStateReq\n");   
++      m_PlayState = psPlay;
++   }
++   
+    cControl *pControl = cControl::Control();
+    if (pControl)
+    {
+       bool Forward;
+       int Speed;
+       pControl->GetReplayMode(m_Playing, Forward, Speed);
++      cClientControl::SendPlayState(PlayMode, m_Playing, Forward, Speed);
+    }
+    else
+    {
+       m_Playing = false;
++      cClientControl::SendPlayState(PlayMode, false, false, 0);
+    }
+    return true;
+ }
+ 
+ void cStreamDevice::TrickSpeed(int Speed)
+ {
+-   dsyslog("[ffnetdev] Device: Trickspeed(not implemented). Speed: %d\n", Speed);
+-   m_Remux->ClearInput();
+-   m_Remux->ClearOutput();
+-   m_Remux->PlayModeChange();
++   dsyslog("[ffnetdev] Device: Trickspeed. Speed: %d\n", Speed);
++   cControl *pControl = cControl::Control();
++   if (pControl)
++   {
++      bool Forward;
++      int Speed;
++      pControl->GetReplayMode(m_Playing, Forward, Speed);
++      cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed);
++   }
+ }
+ 
+ void cStreamDevice::Clear(void)
+ {
+    dsyslog("[ffnetdev] Device: Clear(not implemented).\n");
+-   m_Remux->ClearInput();
+-   m_Remux->ClearOutput();
+-   m_Remux->PlayModeChange();
+ //    cDevice::Clear();
+ }
+ void cStreamDevice::Play(void)
+ {
+-   dsyslog("[ffnetdev] Device: Play(not implemented).\n");
++   dsyslog("[ffnetdev] Device: Play.\n");
++   
++   cControl *pControl = cControl::Control();
++   if (pControl)
++   {
++      bool Forward;
++      int Speed;
++      pControl->GetReplayMode(m_Playing, Forward, Speed);
++      cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed);
++   }
++   
+ //    cDevice::Play();
+ }
+ 
+
+Modified: trunk/streamdevice.h
+===================================================================
+--- trunk/streamdevice.h	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/streamdevice.h	2007-01-30 23:30:54 UTC (rev 27)
+@@ -15,40 +15,47 @@
+ 
+ #include "pes2ts.h"
+ 
++enum ePlayState {psBufferReset,psBufferReseted,psPlay};
++
+ class cStreamDevice: public cDevice {
+ private:
+-	  cPESRemux *m_Remux;
+-	  bool       m_Playing;
++   cPESRemux *m_Remux;
++   bool       m_Playing;
++   ePlayState m_PlayState;
++   ePlayMode  m_PlayMode;
++   
+ protected:
+ public:
+-  cStreamDevice(void);
+-  ~cStreamDevice(void);
+-  virtual bool HasDecoder(void) const;
+-  virtual bool CanReplay(void) const;
+-  virtual bool SetPlayMode(ePlayMode PlayMode);
+-  virtual void TrickSpeed(int Speed);
+-  virtual void Clear(void);
+-  virtual void Play(void);
+-  virtual void Freeze(void);
+-  virtual void Mute(void);
+-  virtual void SetVolumeDevice (int Volume);
+-  virtual void StillPicture(const uchar *Data, int Length);
+-  virtual bool Poll(cPoller &Poller, int TimeoutMs = 0);
+-  virtual int PlayVideo(const uchar *Data, int Length);
++   cStreamDevice(void);
++   ~cStreamDevice(void);
++   virtual bool HasDecoder(void) const;
++   virtual bool CanReplay(void) const;
++   virtual bool SetPlayMode(ePlayMode PlayMode);
++   virtual void TrickSpeed(int Speed);
++   virtual void Clear(void);
++   virtual void Play(void);
++   virtual void Freeze(void);
++   virtual void Mute(void);
++   virtual void SetVolumeDevice (int Volume);
++   virtual void StillPicture(const uchar *Data, int Length);
++   virtual bool Poll(cPoller &Poller, int TimeoutMs = 0);
++   virtual int PlayVideo(const uchar *Data, int Length);
+ #if VDRVERSNUM < 10342   
+-  virtual int PlayAudio(const uchar *Data, int Length);
++   virtual int PlayAudio(const uchar *Data, int Length);
+ #else
+-  virtual int PlayAudio(const uchar *Data, int Length, uchar Id);
++   virtual int PlayAudio(const uchar *Data, int Length, uchar Id);
+ #endif  
+-  virtual int ProvidesCa(const cChannel *Channel) const;
+-  virtual void MakePrimaryDevice(bool On);
+-  uchar *Get(int &Count) { return m_Remux->Get(Count); }
+-  void LockOutput()   { m_Remux->LockOutput(); }
+-  void UnlockOutput() { m_Remux->UnlockOutput(); }
+-  void Del(int Count) { m_Remux->DelOutput(Count); }
+-  void ClearOutput() { m_Remux->ClearOutput(); }
+-  int Available(void) { return m_Remux->Available(); }
+-  int Free(void) { return m_Remux->Free(); }
++   virtual int ProvidesCa(const cChannel *Channel) const;
++   virtual void MakePrimaryDevice(bool On);
++   uchar *Get(int &Count) { return m_Remux->Get(Count); }
++   void LockOutput()   { m_Remux->LockOutput(); }
++   void UnlockOutput() { m_Remux->UnlockOutput(); }
++   void Del(int Count) { m_Remux->DelOutput(Count); }
++   void ClearOutput() { m_Remux->ClearOutput(); }
++   int Available(void) { return m_Remux->Available(); }
++   int Free(void) { return m_Remux->Free(); }
++   void SetPlayState(ePlayState PlayState) { m_PlayState = PlayState;}
++   ePlayState GetPlayState(void)           { return m_PlayState; }
+ };
+ 
+ #endif
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/tsworker.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -172,18 +172,30 @@
+ 						 m_StreamClient->RemoteIp().c_str(), m_StreamClient->RemotePort());
+ 				}
+ 				else
+-					{
++			   {
+ #ifdef DEBUG
+ 					   fprintf(stderr, "[ffnetdev] Streamer: Error closing client socket.\n");
+ #endif
+ 					   esyslog("[ffnetdev] Streamer: Error closing connection.");
+ 					   m_Active=false;
+ 					   continue;
+-					} 
+-					  
++				} 	  
+ 			}
+ 			
+ 			if ( select.CanWrite(*m_StreamClient) ) {
++			   
++			   if (m_StreamDevice->GetPlayState() == psBufferReset)
++			   {
++			      cCondWait::SleepMs(10);
++			      m_StreamDevice->SetPlayState(psBufferReseted);
++			   }
++			   
++			   if (m_StreamDevice->GetPlayState() == psBufferReseted)
++			   {
++			      cCondWait::SleepMs(10);
++			      continue;
++		      }
++			   
+ 				int count=0;
+ 				
+ 				m_StreamDevice->LockOutput();
+@@ -329,6 +341,7 @@
+ 					  
+ 			}
+ 			
++			
+ 			int count=0;
+ 			
+ 			m_StreamDevice->LockOutput();
+
+
+

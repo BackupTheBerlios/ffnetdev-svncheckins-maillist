@@ -1,0 +1,1251 @@
+From zwer at berlios.de  Wed May  3 22:45:37 2006
+From: zwer at berlios.de (zwer at berlios.de)
+Date: Wed, 3 May 2006 22:45:37 +0200
+Subject: [Ffnetdev-svncheckins] r15 - trunk
+Message-ID: <200605032045.k43KjbJR029802@sheep.berlios.de>
+
+Author: zwer
+Date: 2006-05-03 22:45:33 +0200 (Wed, 03 May 2006)
+New Revision: 15
+
+Modified:
+   trunk/osdworker.c
+   trunk/remote.c
+   trunk/remote.h
+Log:
+- Kleinigkeit am Anlernvorgang angepasst
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-04-29 06:52:33 UTC (rev 14)
++++ trunk/osdworker.c	2006-05-03 20:45:33 UTC (rev 15)
+@@ -533,15 +533,14 @@
+ 						dsyslog("[ffnetdev] VNC: KeyEvent\n");
+ 						cMyRemote *pRemote;
+ 						if ((pRemote = m_pPlugin->GetRemote()) != NULL) {	
+-							if (msg.ke.down) 
+-								pRemote->Put(Swap32IfLE(msg.ke.key), false, false);
+-							else 
+-								pRemote->Put(Swap32IfLE(msg.ke.key), false, true);
++							pRemote->Put(Swap32IfLE(msg.ke.key), false, !msg.ke.down);
+ 						}
+ #ifdef DEBUG
+-						fprintf(stderr, "[ffnetdev] VNC: Remote: %04X\n", msg.ke.key);
++						fprintf(stderr, "[ffnetdev] VNC: Remote: %04X %s\n", msg.ke.key, 
++						    msg.ke.down ? "down" : "up");
+ #endif									
+-						dsyslog("[ffnetdev] VNC: Remote: %04X\n", msg.ke.key);
++						dsyslog("[ffnetdev] VNC: Remote: %04X %s\n", msg.ke.key, 
++						    msg.ke.down ? "down" : "up");
+ 						break;
+ 		case rfbPointerEvent:		if (!RFBRead( ((char*)&msg.pe)+1, sz_rfbPointerEventMsg-1))
+ 							return;
+
+Modified: trunk/remote.c
+===================================================================
+--- trunk/remote.c	2006-04-29 06:52:33 UTC (rev 14)
++++ trunk/remote.c	2006-05-03 20:45:33 UTC (rev 15)
+@@ -29,6 +29,9 @@
+ 
+ bool cMyRemote::Put(uint64 Code, bool Repeat, bool Release)
+ {
++    if ((cRemote::IsLearning()) && (Release))
++	return false;
++    else
+ 	return cRemote::Put(Code, Repeat ,Release);
+ }
+ 
+
+Modified: trunk/remote.h
+===================================================================
+--- trunk/remote.h	2006-04-29 06:52:33 UTC (rev 14)
++++ trunk/remote.h	2006-05-03 20:45:33 UTC (rev 15)
+@@ -17,7 +17,7 @@
+   cMyRemote(const char *Name);
+   virtual bool Initialize(void);
+   virtual bool Ready(void);
+-  virtual bool Put(uint64 Code, bool Repeat = false, bool Release = false);
++  virtual bool Put(uint64 Code, bool Repeat, bool Release);
+ };
+ 
+ 
+
+
+
+From zwer at berlios.de  Mon May  8 00:33:46 2006
+From: zwer at berlios.de (zwer at berlios.de)
+Date: Mon, 8 May 2006 00:33:46 +0200
+Subject: [Ffnetdev-svncheckins] r16 - trunk
+Message-ID: <200605072233.k47MXkId015068@sheep.berlios.de>
+
+Author: zwer
+Date: 2006-05-08 00:33:35 +0200 (Mon, 08 May 2006)
+New Revision: 16
+
+Modified:
+   trunk/Makefile
+   trunk/ffnetdev.c
+   trunk/netosd.c
+   trunk/osdworker.c
+   trunk/osdworker.h
+   trunk/tableinitcmtemplate.c
+Log:
+- add multi area OSD support. You can use all plugins and all skins.
+
+Modified: trunk/Makefile
+===================================================================
+--- trunk/Makefile	2006-05-03 20:45:33 UTC (rev 15)
++++ trunk/Makefile	2006-05-07 22:33:35 UTC (rev 16)
+@@ -31,7 +31,7 @@
+ 
+ ### The version number of VDR (taken from VDR's "config.h"):
+ 
+-VDRVERSION = $(shell grep 'define VDRVERSION ' $(VDRDIR)/config.h | awk '{ print $$3 }' | sed -e 's/"//g')
++APIVERSION = $(shell grep 'define APIVERSION ' $(VDRDIR)/config.h | awk '{ print $$3 }' | sed -e 's/"//g')
+ 
+ ### The name of the distribution archive:
+ 
+@@ -95,7 +95,7 @@
+ 
+ %.so: 
+ 	$(CXX) $(CXXFLAGS) -shared $^ -o $@
+-	@cp $@ $(LIBDIR)/$@.$(VDRVERSION)
++	@cp $@ $(LIBDIR)/$@.$(APIVERSION)
+ 
+ dist: clean
+ 	@-rm -rf $(TMPDIR)/$(ARCHIVE)
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2006-05-03 20:45:33 UTC (rev 15)
++++ trunk/ffnetdev.c	2006-05-07 22:33:35 UTC (rev 16)
+@@ -85,7 +85,7 @@
+ bool cPluginFFNetDev::ProcessArgs(int argc, char *argv[])
+ {
+   // Implement command line argument processing here if applicable.
+-  fprintf (stderr, "[ffnetdev] processing args.\n");
++  dsyslog("[ffnetdev] processing args.\n");
+   static struct option long_options[] = {
+       { "tsport",    		required_argument	, NULL, 't' },
+       { "osdport",   		required_argument	, NULL, 'o' },
+@@ -97,33 +97,34 @@
+   while ((c = getopt_long(argc, argv, "t:o:e", long_options, NULL)) != -1) {
+         switch (c) {
+           case 'e': EnableRemote = true;
++		    dsyslog("[ffnetdev] Remote enabled\n");
+           	    break;
+           case 't': if (isnumber(optarg)) {
+                        int n = atoi(optarg);
+                        if (0 < n && n < 65536) {
+                           TSPort = n;
+-                          fprintf(stderr, "[ffnetdev] TS Port: %d\n", n);
++                          dsyslog("[ffnetdev] TS Port: %d\n", n);
+                           break;
+                        }
+                     }
+-                    fprintf(stderr, "[ffnetdev] invalid port number: %s\n", optarg);
++                    esyslog("[ffnetdev] invalid port number: %s\n", optarg);
+                     return 2;
+                     break;
+           case 'o': if (isnumber(optarg)) {
+                        int n = atoi(optarg);
+                        if (0 < n && n < 65536) {
+                           OSDPort = n;
+-                          fprintf(stderr, "[ffnetdev] OSD Port: %d\n", n);
++                          dsyslog("[ffnetdev] OSD Port: %d\n", n);
+                           break;
+                        }
+                     }
+-                    fprintf(stderr, "[ffnetdev] invalid port number: %s\n", optarg);
++                    esyslog("[ffnetdev] invalid port number: %s\n", optarg);
+                     return 2;
+                     break;
+ 	  default : return 2;
+ 	}
+   }
+-  fprintf (stderr, "[ffnetdev] finished processing args.\n");
++  dsyslog("[ffnetdev] finished processing args.\n");
+   return true;
+ }
+ 
+@@ -156,7 +157,7 @@
+ bool cPluginFFNetDev::Initialize(void)
+ {
+   // Start any background activities the plugin shall perform.
+-  fprintf(stderr,"[ffnetdev] initializing plugin.\n");
++  dsyslog("[ffnetdev] initializing plugin.\n");
+   m_StreamDevice = new cStreamDevice();
+   return true;
+ }
+@@ -169,7 +170,7 @@
+ cOsdObject *cPluginFFNetDev::MainMenuAction(void)
+ {
+   // Perform the action when selected from the main VDR menu.
+-  fprintf (stderr, "[ffnetdev] MainMenuAction called.\n");
++  dsyslog("[ffnetdev] MainMenuAction called.\n");
+ //  return new cMenuSetupSoftdevice;
+   return NULL;
+ }
+@@ -223,17 +224,11 @@
+ 	    
+ 	if (!cRemote::HasKeys())
+ 	    new cLearningThread();
+-#ifdef DEBUG
+-	fprintf(stderr, "[ffnetdev] remote control enabled.\n");
+-#endif
+-	isyslog("[ffnetdev] remote control enabled.\n");
++	dsyslog("[ffnetdev] remote control enabled.\n");
+     }
+     else 
+     {
+-#ifdef DEBUG
+-	fprintf(stderr, "[ffnetdev] remote control disabled.\n");
+-#endif
+-	isyslog("[ffnetdev] remote control disabled.\n");
++	dsyslog("[ffnetdev] remote control disabled.\n");
+     }
+ }
+ 
+@@ -244,10 +239,7 @@
+     while ((cOsd::IsOpen() > 0) && (i-- > 0))
+ 	cRemote::Put(kBack);
+ 
+-#ifdef DEBUG
+-    fprintf(stderr, "[ffnetdev] remote control disabled.\n");
+-#endif
+-    isyslog("[ffnetdev] remote control disabled.\n");
++    dsyslog("[ffnetdev] remote control disabled.\n");
+     
+     if (m_origPrimaryDevice != -1)
+     {
+
+Modified: trunk/netosd.c
+===================================================================
+--- trunk/netosd.c	2006-05-03 20:45:33 UTC (rev 15)
++++ trunk/netosd.c	2006-05-07 22:33:35 UTC (rev 16)
+@@ -29,8 +29,8 @@
+ {
+    eOsdError Result = cOsd::CanHandleAreas(Areas, NumAreas);
+    if (Result == oeOk) {
+-      if (NumAreas > 1) 		// Handle only one big area (because we support VNC colour map mode)
+-         return oeTooManyAreas;		// We cannot handle multiple areas having different colour maps. We need a single colourmap. Thus, only one area.
++      if (NumAreas > 7)			
++    	 return oeTooManyAreas;
+       int TotalMemory = 0;
+       for (int i = 0; i < NumAreas; i++) {
+          if (Areas[i].bpp != 1 && Areas[i].bpp != 2 && Areas[i].bpp != 4 && Areas[i].bpp != 8)
+@@ -48,31 +48,28 @@
+      return Result;
+ }
+ 
++
+ void cNetOSD::Flush(void)
+ {
+     cBitmap *Bitmap;
++    int x1=0, x2=0, y1=0, y2=0;
+ 
+     for (int i = 0; (Bitmap = GetBitmap(i)) != NULL; i++)
+-    {
+-       int x1=0, x2=0, y1=0, y2=0;
++    {   
+        if (Bitmap->Dirty(x1, y1, x2, y2))   
+        {  
+-  		// commit colors:
+-       		int NumColors;
+-       		const tColor *Colors = Bitmap->Colors(NumColors);
+-       		if (Colors) {
+-       			cOSDWorker::SendCMAP(NumColors , Colors);
+-       		}
+ #ifdef DEBUG         
+ 	        fprintf(stderr, "[ffnetdev] NetOSD: Left: %d, Top: %d, X0: %d, Y0: %d, Width: %d, Height: %d\n", 
+                			 Left(), Top(), Bitmap->X0(), Bitmap->Y0(), Bitmap->Width(), Bitmap->Height()); 
+        		fprintf(stderr, "[ffnetdev] NetOSD: Dirty area x1: %d, y1: %d, x2: %d, y2: %d\n",x1,y1,x2,y2);
+ #endif
+-       		// commit modified data:
+-       		cOSDWorker::SendScreen(Bitmap->Width(), Left()+x1 +Bitmap->X0(), Top()+y1+Bitmap->Y0(), x2-x1+1, y2-y1+1, Bitmap->Data(x1, y1)); 
++		cOSDWorker::DrawBitmap(Left() + Bitmap->X0(), Top() + Bitmap->Y0(), *Bitmap);
++       		
+ 	}
+         Bitmap->Clean();
+-     }
++    }
++     
++    cOSDWorker::SendScreen(); 
+ }
+ 
+ 
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-05-03 20:45:33 UTC (rev 15)
++++ trunk/osdworker.c	2006-05-07 22:33:35 UTC (rev 16)
+@@ -47,20 +47,20 @@
+ 	ServerFormat.blueShift	 	= 0;
+ 	ServerFormat.blueMax	 	= 255;
+ 	
+-	memset(&m_OSDBuffer, 0, sizeof(m_OSDBuffer));
++	m_pOsdBitmap = NULL;
+ 	
+ 	numOSDColors		= 1;
+ 	memset(&OSDColors, 0, sizeof(OSDColors));
+ 	
+-	m_notupdatedLeft   = -1;
+-	m_notupdatedTop    = -1;
+-	m_notupdatedRight  = -1;
+-	m_notupdatedBottom = -1;
++	m_pOsdBitmap = new cBitmap(720, 576, 8, 0, 0);
++	m_pOsdBitmap->DrawRectangle(0, 0, 720, 576, clrTransparent);
++	
+ 	memset(&m_lasttime, 0, sizeof(m_lasttime));
+ 	memset(&m_lastupdate, 0, sizeof(m_lastupdate));
+ 	
+ 	memset(&ClientFormat, 0, sizeof(ClientFormat));
+ 	ClientFormat.trueColour = 1;
++	m_bOSDisClear = true;
+ }
+ 
+ cOSDWorker::~cOSDWorker() {
+@@ -70,11 +70,13 @@
+ 	{
+ 	    m_pEncoder->LogStats();
+ 	    delete m_pEncoder;
+-	    m_pEncoder = NULL;
+ 	}
+ 	
+ 	if (m_pSendBuffer != NULL)
+ 	    delete [] m_pSendBuffer;
++	    
++	if (m_pOsdBitmap != NULL)
++	    delete m_pOsdBitmap;
+ }
+ 
+ 
+@@ -156,97 +158,81 @@
+ 
+ bool cOSDWorker::ClearScreen(void)
+ {
+-	if (m_Instance == NULL)
++	if ((m_Instance == NULL) || (m_Instance->m_pOsdBitmap == NULL))
+ 	    return false;
+ 	
+ 	// this should be improved;
+ 	// 1) maybe we should send a our very "special" pseudo encoding[CLEAR_SCREEN] to our "special" VNC client to get an empty screen really fast
+ 
+-	m_Instance->numOSDColors = 1;
+-	memset(&m_Instance->OSDColors, 0, sizeof(m_Instance->OSDColors));
+-	SendCMAP(m_Instance->numOSDColors, m_Instance->OSDColors);
+-		
+-	bool bRetVal = false;
+-	memset(&(m_Instance->m_OSDBuffer), 0, 720*576); 
+ 	memset(&(m_Instance->m_lasttime), 0, sizeof(m_Instance->m_lasttime));
+-	bRetVal = SendScreen(720,0,0,720,576,&(m_Instance->m_OSDBuffer));
+ 	
+-	return bRetVal;
++	m_Instance->m_pOsdBitmap->DrawRectangle(0, 0, 720, 576, clrTransparent);
++	m_Instance->SendScreen();
++	
++	rfbBellMsg fu;
++	fu.type=rfbBell;
++	OSDWrite((unsigned char*)&fu, sz_rfbBellMsg);
++	
++	m_Instance->m_bOSDisClear = true;
++	
++	return true;
+ }
+ 
++bool cOSDWorker::DrawBitmap(int x1, int y1, cBitmap &pOsdBitmap)
++{
++    if (m_Instance->m_pOsdBitmap != NULL)
++    {
++	m_Instance->m_pOsdBitmap->DrawBitmap(x1, y1, pOsdBitmap);
++	return true;
++    }
++    
++    return false;
++}
+ 
+-bool cOSDWorker::SendScreen(unsigned int stride, unsigned int x1, unsigned int y1, unsigned int w, unsigned int h, const void *data)
++
++bool cOSDWorker::SendScreen(int x1, int y1, int x2, int y2)
+ {
+-   if (m_Instance == NULL)
++   if ((m_Instance == NULL) || (m_Instance->m_pOsdBitmap == NULL))
+ 	return false;
+-	    
+-   rfbFramebufferUpdateMsg fu;
+-   rfbFramebufferUpdateRectHeader furh;
+-   
+-   unsigned int x;
+-   unsigned int y;
+-   for (y=0; y<h; y++)
+-      for (x=0; x<w; x++)
+-   	 m_Instance->m_OSDBuffer[(720*(y+y1))+x+x1] = *((unsigned char *)data+(y*stride)+x);
+-
+-    x = x1;
+-    y = y1;
+-    x1 = (m_Instance->m_notupdatedLeft   != -1 && m_Instance->m_notupdatedLeft  < (int)x1)
+-    	 ? m_Instance->m_notupdatedLeft : x1;
+-    y1 = (m_Instance->m_notupdatedTop    != -1 && m_Instance->m_notupdatedTop   < (int)y1)
+-	 ? m_Instance->m_notupdatedTop  : y1;
+ 	
+-    w  = (m_Instance->m_notupdatedRight  != -1 && m_Instance->m_notupdatedRight > (int)(x1 + w))
+-	 ? m_Instance->m_notupdatedRight  - x1 : w + (x - x1);
+-    h  = (m_Instance->m_notupdatedBottom != -1 && m_Instance->m_notupdatedBottom > (int)(y1 + h)) 
+-	 ? m_Instance->m_notupdatedBottom - y1 : h + (y - y1);
+-
+-   struct timeval curtime;
+-   gettimeofday(&curtime, 0);
+-   curtime.tv_sec = curtime.tv_sec - (((int)curtime.tv_sec / 1000000) * 1000000);
+-   if ((curtime.tv_sec * 1000 + (curtime.tv_usec / 1000) < m_Instance->m_lasttime.tv_sec * 1000 + (m_Instance->m_lasttime.tv_usec / 1000) + 100) ||
+-      (m_Instance->m_pEncoder == NULL))
+-   {
+-        m_Instance->m_notupdatedLeft   = (int)x1;
+-	m_Instance->m_notupdatedTop    = (int)y1;
+-	m_Instance->m_notupdatedRight  = (int)(x1 + w);
+-	m_Instance->m_notupdatedBottom = (int)(y1 + h);
+-	m_Instance->m_lasttime = curtime;
++   if ((m_Instance->state==HANDSHAKE_OK) && (m_Instance->m_pEncoder != NULL) &&
++       (x1 || x2 || y1 || y2 || (m_Instance->m_pOsdBitmap->Dirty(x1, y1, x2, y2))))
++   {	    
++	rfbFramebufferUpdateMsg fu;
++	struct timeval curtime;
++	gettimeofday(&curtime, 0);
++	curtime.tv_sec = curtime.tv_sec - (((int)curtime.tv_sec / 1000000) * 1000000);
++	if ((curtime.tv_sec * 1000 + (curtime.tv_usec / 1000) < m_Instance->m_lasttime.tv_sec * 1000 + (m_Instance->m_lasttime.tv_usec / 1000) + 100) ||
++    	    (m_Instance->m_pEncoder == NULL))
++	{
++	    m_Instance->m_lasttime = curtime;	
++	    return false;
++	}
++	else
++	{
++	    m_Instance->m_lasttime = curtime;
++	    m_Instance->m_lastupdate = curtime;
++	}
+ 	
+-	return false;
+-   }
+-   else
+-   {
+-	m_Instance->m_notupdatedLeft   = -1;
+-	m_Instance->m_notupdatedTop    = -1;
+-	m_Instance->m_notupdatedRight  = -1;
+-	m_Instance->m_notupdatedBottom = -1;
+-	m_Instance->m_lasttime = curtime;
+-	m_Instance->m_lastupdate = curtime;
+-   }
+-    
+-   if ((m_Instance->state==HANDSHAKE_OK) && (m_Instance->m_pEncoder != NULL)) {
+-	RECT rect = {x1, y1, x1 + w, y1 + h};
++	if (m_Instance->m_pEncoder != NULL)
++	    m_Instance->m_pEncoder->SetLocalFormat(m_Instance->ServerFormat, 720, 576);
++	
++	RECT rect = {x1, y1, x2, y2};
+    	fu.type=rfbFramebufferUpdate;
+    	fu.nRects=Swap16IfLE(1);
+    	OSDWrite((unsigned char*)&fu, sz_rfbFramebufferUpdateMsg);
+-	
+-	int BufferSize = m_Instance->m_pEncoder->RequiredBuffSize(w, h);
++	int BufferSize = m_Instance->m_pEncoder->RequiredBuffSize(x2-x1, y2-y1);
+ 	m_Instance->CreateSendBuffer(BufferSize);
+-	BufferSize = m_Instance->m_pEncoder->EncodeRect( &(m_Instance->m_OSDBuffer[0]), m_Instance->m_pSendBuffer, rect);
++	BufferSize = m_Instance->m_pEncoder->EncodeRect((BYTE*)(m_Instance->m_pOsdBitmap->Data(0, 0)), m_Instance->m_pSendBuffer, rect);
+ #ifdef DEBUG
+ 	fprintf(stderr, "[ffnetdev] VNC: Send OSD Data %d Bytes\n", BufferSize);
+ #endif
+ 	dsyslog("[ffnetdev] VNC: Send OSD Data %d Bytes\n", BufferSize);
+        	OSDWrite((unsigned char*)m_Instance->m_pSendBuffer, BufferSize);
++	m_Instance->m_pOsdBitmap->Clean();
+ 	
+-	if ((m_Instance->numOSDColors == 0) || ((m_Instance->numOSDColors == 1) && (m_Instance->OSDColors[0] == 0)))
+-	{
+-	    rfbBellMsg fu;
+-	    fu.type=rfbBell;
+-	    OSDWrite((unsigned char*)&fu, sz_rfbBellMsg);
+-	}
+-
++	m_Instance->m_bOSDisClear = false;
++	
+    	return true;
+    }
+    else {
+@@ -255,6 +241,16 @@
+ }
+ 
+ 
++bool cOSDWorker::GetOSDColors(const tColor **OSDColors, int *numOSDColors) 
++{ 
++    if ((m_Instance == NULL) || (m_Instance->m_pOsdBitmap == NULL))
++	return false;
++	
++    *OSDColors = (tColor*)m_Instance->m_pOsdBitmap->Colors(*numOSDColors);
++    return true;
++}
++
++
+ bool cOSDWorker::SendCMAP(int NumColors, const tColor *Colors)
+ {
+ 	if (m_Instance == NULL)
+@@ -488,6 +484,8 @@
+ 							    m_pEncoder->SetQualityLevel(9);
+ 							    m_pEncoder->SetRemoteFormat(ClientFormat);
+ 							}
++							
++							ClearScreen();
+ 						}
+ 						break;
+ 		case rfbFramebufferUpdateRequest:
+@@ -512,18 +510,18 @@
+ 								Swap16IfLE(msg.fur.h)
+ 							);
+ 							
+-						if (numOSDColors > 0)
++	
++						if (m_bOSDisClear)
+ 						{
+-						    SendCMAP(numOSDColors, OSDColors);
+-						    SendScreen(720, //stride
+-							Swap16IfLE(msg.fur.x), Swap16IfLE(msg.fur.y),
+-						        Swap16IfLE(msg.fur.w), Swap16IfLE(msg.fur.h),
+-						  	&m_OSDBuffer);
++						    ClearScreen();
+ 						}
+ 						else
+ 						{
+-						    ClearScreen();
++						    SendScreen(	Swap16IfLE(msg.fur.x), Swap16IfLE(msg.fur.y),
++						    		Swap16IfLE(msg.fur.x + msg.fur.w), 
++								Swap16IfLE(msg.fur.y + msg.fur.h));
+ 						}
++						
+ 						break;
+ 		case rfbKeyEvent:		if (!RFBRead( ((char*)&msg.ke)+1, sz_rfbKeyEventMsg-1))
+ 							return;
+@@ -747,15 +745,10 @@
+ 		struct timeval curtime;
+ 		gettimeofday(&curtime, 0);
+ 		curtime.tv_sec = curtime.tv_sec - (((int)curtime.tv_sec / 1000000) * 1000000);
+-		if ((curtime.tv_sec * 1000 + (curtime.tv_usec / 1000) > m_lastupdate.tv_sec * 1000 + (m_lastupdate.tv_usec / 1000) + 500) &&
+-		    (m_notupdatedLeft != -1) && (m_notupdatedTop != -1) && (m_notupdatedRight != -1) && 
+-		    (m_notupdatedBottom != -1))
++		if ((curtime.tv_sec * 1000 + (curtime.tv_usec / 1000) > m_lastupdate.tv_sec * 1000 + (m_lastupdate.tv_usec / 1000) + 500))
+ 		{
+ 		    memset(&m_lasttime, 0, sizeof(m_lasttime));
+-		    SendScreen(720, m_notupdatedLeft, m_notupdatedTop, 
+-			       m_notupdatedRight  - m_notupdatedLeft, 
+-			       m_notupdatedBottom - m_notupdatedTop, 
+-			       &(m_Instance->m_OSDBuffer[m_notupdatedTop * 720 + m_notupdatedLeft]));
++		    SendScreen();
+ 		}
+ 	} // while(m_Active)
+ 
+
+Modified: trunk/osdworker.h
+===================================================================
+--- trunk/osdworker.h	2006-05-03 20:45:33 UTC (rev 15)
++++ trunk/osdworker.h	2006-05-07 22:33:35 UTC (rev 16)
+@@ -67,11 +67,11 @@
+ 	rfbPixelFormat  ClientFormat;
+ 	rfbPixelFormat  ServerFormat;
+ 	
+-	BYTE		m_OSDBuffer[720*576];
+-//	BYTE		m_oldOSDData[720*576];
+ 	BYTE		*m_pSendBuffer;
+ 	int		m_SendBufferSize;
++	cBitmap		*m_pOsdBitmap;
+ 	tColor 		OSDColors[256];
++	bool 		m_bOSDisClear;
+ 
+ 	void HandleClientRequests(cTBSelect *select);
+ 	bool RFBRead(char *buffer, int len);
+@@ -81,10 +81,6 @@
+ 	
+ 	struct timeval  m_lasttime;
+ 	struct timeval  m_lastupdate;
+-	int		m_notupdatedLeft;
+-	int		m_notupdatedTop;
+-	int		m_notupdatedRight;
+-	int		m_notupdatedBottom;
+ 	
+ 	cPluginFFNetDev *m_pPlugin;
+ 	
+@@ -103,11 +99,12 @@
+ 	static void CloseOSDClient(void);
+ 
+ 	static bool ClearScreen(void);
+-        static bool SendScreen(unsigned int stride, unsigned int x1, unsigned int y1, unsigned int w, unsigned int h, const void *data);
++	static bool DrawBitmap(int x1, int y1, cBitmap &pOsdBitmap);
++        static bool SendScreen(int x1=0, int y1=0, int x2=0, int y2=0);
+     	static bool SendCMAP(int NumColors, const tColor *Colors);
+     	static bool OSDWrite(unsigned char *data, unsigned int data_length);
+     	static bool SendPlayMode(ePlayMode PlayMode);
+-	static void GetOSDColors(tColor **OSDColors, int *numOSDColors) { *OSDColors = &m_Instance->OSDColors[0]; (*numOSDColors) = m_Instance->numOSDColors; };
++	static bool GetOSDColors(const tColor **OSDColors, int *numOSDColors);
+ };
+ 
+ inline bool cOSDWorker::Active(void) {
+
+Modified: trunk/tableinitcmtemplate.c
+===================================================================
+--- trunk/tableinitcmtemplate.c	2006-05-03 20:45:33 UTC (rev 15)
++++ trunk/tableinitcmtemplate.c	2006-05-07 22:33:35 UTC (rev 16)
+@@ -63,7 +63,7 @@
+ 	ReleaseDC(NULL, hDC);
+ 	*/
+ 	
+-	tColor *pColors;
++	const tColor *pColors;
+ 	int    NumColors;	
+ 	cOSDWorker::GetOSDColors(&pColors, &NumColors);
+ 
+@@ -74,7 +74,7 @@
+     OUT_T outRed, outGreen, outBlue;
+     OUT_T *t = (OUT_T *)*table;
+     
+-    tColor *pColor = pColors;
++    const tColor *pColor = pColors;
+     for (i = 0; i < NumColors; i++)
+ 	{
+ 		// Split down the RGB data
+
+
+
+From junukn at berlios.de  Tue May 16 22:45:40 2006
+From: junukn at berlios.de (junukn at berlios.de)
+Date: Tue, 16 May 2006 22:45:40 +0200
+Subject: [Ffnetdev-svncheckins] r17 - trunk/tools
+Message-ID: <200605162045.k4GKjeRk026893@sheep.berlios.de>
+
+Author: junukn
+Date: 2006-05-16 22:45:10 +0200 (Tue, 16 May 2006)
+New Revision: 17
+
+Modified:
+   trunk/tools/socket.c
+Log:
+fixing socket handle bug, reported from vdr-mailing list
+
+Modified: trunk/tools/socket.c
+===================================================================
+--- trunk/tools/socket.c	2006-05-07 22:33:35 UTC (rev 16)
++++ trunk/tools/socket.c	2006-05-16 20:45:10 UTC (rev 17)
+@@ -30,24 +30,28 @@
+ 	m_LocalAddr.sin_addr.s_addr = INADDR_ANY;
+ 	if (::bind(socket, (struct sockaddr*)&m_LocalAddr, sizeof(m_LocalAddr)) 
+ 			== -1)
+-		return false;
++		goto closefd; //return false;
+ 
+ 	m_RemoteAddr.sin_family = AF_INET;
+ 	m_RemoteAddr.sin_port   = htons(Port);
+ 	m_RemoteAddr.sin_addr.s_addr = inet_addr(Host.c_str());
+ 	if (::connect(socket, (struct sockaddr*)&m_RemoteAddr, 
+ 			sizeof(m_RemoteAddr)) == -1) 
+-		return false;
++		goto closefd; //return false;
+ 
+ 	len = sizeof(struct sockaddr_in);
+ 	if (::getpeername(socket, (struct sockaddr*)&m_RemoteAddr, &len) == -1) 
+-		return false;
++		goto closefd; //return false;
+ 	
+ 	len = sizeof(struct sockaddr_in);
+ 	if (::getsockname(socket, (struct sockaddr*)&m_LocalAddr, &len) == -1) 
+-		return false;
++		goto closefd; //return false;
+ 
+ 	return cTBSource::Open(socket);
++
++closefd:
++    ::close(socket);
++    return false;
+ }
+ 
+ bool cTBSocket::Listen(const std::string &Ip, unsigned int Port, int BackLog) {
+@@ -62,26 +66,30 @@
+ 
+ 	val = 1;
+ 	if (::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val)) == -1)
+-		return false;
++		goto closefd; //return false;
+ 
+ 	m_LocalAddr.sin_family = AF_INET;
+ 	m_LocalAddr.sin_port   = htons(Port);
+ 	m_LocalAddr.sin_addr.s_addr = inet_addr(Ip.c_str());
+ 	if (::bind(socket, (struct sockaddr*)&m_LocalAddr, sizeof(m_LocalAddr)) 
+ 			== -1)
+-		return false;
++		goto closefd; //return false;
+ 
+ 	len = sizeof(struct sockaddr_in);
+ 	if (::getsockname(socket, (struct sockaddr*)&m_LocalAddr, &len) == -1) 
+-		return false;
++		goto closefd; //return false;
+ 	
+ 	if (m_Type == SOCK_STREAM && ::listen(socket, BackLog) == -1)
+-		return false;
++		goto closefd; //return false;
+ 	
+ 	if (!cTBSource::Open(socket))
+-		return false;
++		goto closefd; // return false;
+ 
+ 	return true;
++
++closefd:
++    :close(socket);
++    return false;
+ }
+ 
+ bool cTBSocket::Accept(const cTBSocket &Listener) {
+
+
+
+From junukn at berlios.de  Tue May 16 23:25:53 2006
+From: junukn at berlios.de (junukn at berlios.de)
+Date: Tue, 16 May 2006 23:25:53 +0200
+Subject: [Ffnetdev-svncheckins] r18 - in trunk: . tools
+Message-ID: <200605162125.k4GLPr1S008285@sheep.berlios.de>
+
+Author: junukn
+Date: 2006-05-16 23:25:51 +0200 (Tue, 16 May 2006)
+New Revision: 18
+
+Modified:
+   trunk/ffnetdev.c
+   trunk/ffnetdev.h
+   trunk/remote.c
+   trunk/tools/socket.c
+Log:
+allow to compile with VDR smaller than 10347
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2006-05-16 20:45:10 UTC (rev 17)
++++ trunk/ffnetdev.c	2006-05-16 21:25:51 UTC (rev 18)
+@@ -136,7 +136,7 @@
+  
+     return NULL;
+ }
+-#elif
++#elseif
+ bool cPluginFFNetDev::Active(void) {
+     return (cOSDWorker::Active() || cTSWorker::Active());
+ }
+
+Modified: trunk/ffnetdev.h
+===================================================================
+--- trunk/ffnetdev.h	2006-05-16 20:45:10 UTC (rev 17)
++++ trunk/ffnetdev.h	2006-05-16 21:25:51 UTC (rev 18)
+@@ -40,13 +40,18 @@
+   virtual cOsdObject *MainMenuAction(void);
+   virtual cMenuSetupPage *SetupMenu(void);
+   virtual bool SetupParse(const char *Name, const char *Value);
++  
++#ifndef VDRVERSNUM
++#define VDRVERSNUM 10346
++#endif
+ 
+ #if VDRVERSNUM >= 10347
+   virtual cString Active(void);
+-#elif
++#elseif
+   virtual bool Active(void);
+ #endif
+-  
++ 
++
+   void SetPrimaryDevice();
+   void RestorePrimaryDevice();
+   cMyRemote *GetRemote() { return m_Remote; }
+
+Modified: trunk/remote.c
+===================================================================
+--- trunk/remote.c	2006-05-16 20:45:10 UTC (rev 17)
++++ trunk/remote.c	2006-05-16 21:25:51 UTC (rev 18)
+@@ -29,9 +29,11 @@
+ 
+ bool cMyRemote::Put(uint64 Code, bool Repeat, bool Release)
+ {
++#if VDRVERSNUM >= 10347
+     if ((cRemote::IsLearning()) && (Release))
+ 	return false;
+     else
++#endif
+ 	return cRemote::Put(Code, Repeat ,Release);
+ }
+ 
+
+Modified: trunk/tools/socket.c
+===================================================================
+--- trunk/tools/socket.c	2006-05-16 20:45:10 UTC (rev 17)
++++ trunk/tools/socket.c	2006-05-16 21:25:51 UTC (rev 18)
+@@ -88,7 +88,7 @@
+ 	return true;
+ 
+ closefd:
+-    :close(socket);
++    ::close(socket);
+     return false;
+ }
+ 
+
+
+
+From zwer at berlios.de  Wed May 17 00:38:07 2006
+From: zwer at berlios.de (zwer at berlios.de)
+Date: Wed, 17 May 2006 00:38:07 +0200
+Subject: [Ffnetdev-svncheckins] r19 - trunk
+Message-ID: <200605162238.k4GMc7BH017345@sheep.berlios.de>
+
+Author: zwer
+Date: 2006-05-17 00:38:03 +0200 (Wed, 17 May 2006)
+New Revision: 19
+
+Modified:
+   trunk/osdworker.c
+   trunk/osdworker.h
+Log:
+- add ColorMap support
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-05-16 21:25:51 UTC (rev 18)
++++ trunk/osdworker.c	2006-05-16 22:38:03 UTC (rev 19)
+@@ -47,20 +47,15 @@
+ 	ServerFormat.blueShift	 	= 0;
+ 	ServerFormat.blueMax	 	= 255;
+ 	
+-	m_pOsdBitmap = NULL;
+-	
+-	numOSDColors		= 1;
+-	memset(&OSDColors, 0, sizeof(OSDColors));
+-	
+ 	m_pOsdBitmap = new cBitmap(720, 576, 8, 0, 0);
+-	m_pOsdBitmap->DrawRectangle(0, 0, 720, 576, clrTransparent);
+ 	
+ 	memset(&m_lasttime, 0, sizeof(m_lasttime));
+ 	memset(&m_lastupdate, 0, sizeof(m_lastupdate));
+ 	
+ 	memset(&ClientFormat, 0, sizeof(ClientFormat));
+-	ClientFormat.trueColour = 1;
++	ClientFormat.trueColour = 0;
+ 	m_bOSDisClear = true;
++	m_bColorsChanged = false;
+ }
+ 
+ cOSDWorker::~cOSDWorker() {
+@@ -75,8 +70,7 @@
+ 	if (m_pSendBuffer != NULL)
+ 	    delete [] m_pSendBuffer;
+ 	    
+-	if (m_pOsdBitmap != NULL)
+-	    delete m_pOsdBitmap;
++	delete m_pOsdBitmap;
+ }
+ 
+ 
+@@ -158,31 +152,47 @@
+ 
+ bool cOSDWorker::ClearScreen(void)
+ {
+-	if ((m_Instance == NULL) || (m_Instance->m_pOsdBitmap == NULL))
+-	    return false;
++    int iOldNumColors, iNumColors;
++    
++    if ((m_Instance == NULL) || (m_Instance->m_pOsdBitmap == NULL))
++        return false;
+ 	
+-	// this should be improved;
+-	// 1) maybe we should send a our very "special" pseudo encoding[CLEAR_SCREEN] to our "special" VNC client to get an empty screen really fast
++    // this should be improved;
++    // 1) maybe we should send a our very "special" pseudo encoding[CLEAR_SCREEN] to our "special" VNC client to get an empty screen really fast
+ 
+-	memset(&(m_Instance->m_lasttime), 0, sizeof(m_Instance->m_lasttime));
++    memset(&(m_Instance->m_lasttime), 0, sizeof(m_Instance->m_lasttime));
+ 	
+-	m_Instance->m_pOsdBitmap->DrawRectangle(0, 0, 720, 576, clrTransparent);
+-	m_Instance->SendScreen();
++    m_Instance->m_pOsdBitmap->Colors(iOldNumColors);
++    m_Instance->m_pOsdBitmap->DrawRectangle(0, 0, 720, 576, clrTransparent);
++    m_Instance->m_pOsdBitmap->Colors(iNumColors);
++    if (iNumColors != iOldNumColors)
++        m_Instance->m_bColorsChanged = true;
++	    
++    m_Instance->SendScreen();
++
++    /*
++    rfbBellMsg fu;
++    fu.type=rfbBell;
++    OSDWrite((unsigned char*)&fu, sz_rfbBellMsg);
++    */
+ 	
+-	rfbBellMsg fu;
+-	fu.type=rfbBell;
+-	OSDWrite((unsigned char*)&fu, sz_rfbBellMsg);
++    m_Instance->m_bOSDisClear = true;
+ 	
+-	m_Instance->m_bOSDisClear = true;
+-	
+-	return true;
++    return true;
+ }
+ 
+ bool cOSDWorker::DrawBitmap(int x1, int y1, cBitmap &pOsdBitmap)
+ {
++    int iOldNumColors, iNumColors;
++    
+     if (m_Instance->m_pOsdBitmap != NULL)
+     {
++	m_Instance->m_pOsdBitmap->Colors(iOldNumColors);
+ 	m_Instance->m_pOsdBitmap->DrawBitmap(x1, y1, pOsdBitmap);
++	m_Instance->m_pOsdBitmap->Colors(iNumColors);
++	if (iNumColors != iOldNumColors)
++	    m_Instance->m_bColorsChanged = true;
++	
+ 	return true;
+     }
+     
+@@ -214,8 +224,12 @@
+ 	    m_Instance->m_lastupdate = curtime;
+ 	}
+ 	
+-	if (m_Instance->m_pEncoder != NULL)
+-	    m_Instance->m_pEncoder->SetLocalFormat(m_Instance->ServerFormat, 720, 576);
++	if (m_Instance->m_bColorsChanged)
++	{
++	    int numOSDColors;
++	    const tColor *OSDColors = (tColor*)m_Instance->m_pOsdBitmap->Colors(numOSDColors);
++	    cOSDWorker::SendCMAP(numOSDColors, OSDColors);
++	}
+ 	
+ 	RECT rect = {x1, y1, x2, y2};
+    	fu.type=rfbFramebufferUpdate;
+@@ -253,7 +267,7 @@
+ 
+ bool cOSDWorker::SendCMAP(int NumColors, const tColor *Colors)
+ {
+-	if (m_Instance == NULL)
++	if ((m_Instance == NULL) || (m_Instance->m_pEncoder == NULL))
+ 	    return false;
+ 	
+ 	rfbSetColourMapEntriesMsg scme;
+@@ -265,7 +279,7 @@
+        	int i;
+ 	
+ 	if ((m_Instance->state==HANDSHAKE_OK) && !(m_Instance->ClientFormat.trueColour)) { 
+-		dsyslog("[ffnetdev] VNC: SendColourMapEntries");
++		dsyslog("[ffnetdev] VNC: SendColourMapEntries\n");
+ 		scme.type=rfbSetColourMapEntries;
+ 		scme.firstColour = Swap16IfLE(0);
+ 		scme.nColours = Swap16IfLE((CARD16)NumColors);
+@@ -274,33 +288,31 @@
+ 
+         	for(i=0; i<NumColors; i++)
+         	{
+-           	red   = ((Colors[i]&0x00FF0000) >> 16);
+-           	green = ((Colors[i]&0x0000FF00) >>  8);
+-           	blue  = ((Colors[i]&0x000000FF) );
++           	    red   = ((Colors[i]&0x00FF0000) >> 16);
++           	    green = ((Colors[i]&0x0000FF00) >>  8);
++           	    blue  = ((Colors[i]&0x000000FF) );
++		    dsyslog("[ffnetdev] VNC: SendColors r=%x g=%x b=%x\n", red, green, blue);
+            	
+-           	if (m_Instance->UseAlpha) {
++           	    if (m_Instance->UseAlpha) 
++		    {
+            		alpha = ((Colors[i]&0xFF000000) >> 24);
+                		OSDWrite( (unsigned char*) &alpha, 2);
+-           	}
++           	    }
+            	
+-	        OSDWrite( (unsigned char*) &red, 2);
+-      	   	OSDWrite( (unsigned char*) &green, 2);
+-	  	OSDWrite( (unsigned char*) &blue, 2);
+-	   	
+-	   	m_Instance->OSDColors[i] = Colors[i];
++	    	    OSDWrite( (unsigned char*) &red, 2);
++      	   	    OSDWrite( (unsigned char*) &green, 2);
++	  	    OSDWrite( (unsigned char*) &blue, 2);
+ 		}
+-		m_Instance->numOSDColors = NumColors;
+-		if (m_Instance->m_pEncoder != NULL)
+-		    m_Instance->m_pEncoder->SetLocalFormat(m_Instance->ServerFormat, 720, 576);
++		m_Instance->m_pEncoder->SetLocalFormat(m_Instance->ServerFormat, 720, 576);
++		    
++		m_Instance->m_bColorsChanged = false;
+ 		
+ 		return true;
+ 	} 
+ 	else {
+-		for (i=0; i<NumColors; i++)
+-			m_Instance->OSDColors[i] = Colors[i];
+-		m_Instance->numOSDColors = NumColors;
+-		if (m_Instance->m_pEncoder != NULL)
+-		    m_Instance->m_pEncoder->SetLocalFormat(m_Instance->ServerFormat, 720, 576);
++		m_Instance->m_pEncoder->SetLocalFormat(m_Instance->ServerFormat, 720, 576);
++		    
++		m_Instance->m_bColorsChanged = false;
+ 		
+ 		return false;
+ 	}
+@@ -391,6 +403,9 @@
+ 							ClientFormat = msg.spf.format;
+ 						dsyslog("[ffnetdev] VNC: RGB %d %d %d %d %d %d\n", 
+ 							ClientFormat.redShift, ClientFormat.redMax, ClientFormat.greenShift, ClientFormat.greenMax, ClientFormat.blueShift, ClientFormat.blueMax);
++						
++						//if (m_pEncoder != NULL)	
++						//    m_pEncoder->SetRemoteFormat(ClientFormat);	
+ 						break;
+ 		case rfbFixColourMapEntries:	if (!RFBRead( ((char*)&msg.fcme)+1, sz_rfbFixColourMapEntriesMsg-1))
+ 							return;
+@@ -466,27 +481,27 @@
+ 									}
+ 									break;
+ 								case rfbEncSpecialUseAlpha:	
+-									if (m_pEncoder == NULL)
+-									{
+-									    isyslog("[ffnetdev] VNC: ->Special FFnetDev Encoding: client wants alpha channel.\n");
+-									}
++									isyslog("[ffnetdev] VNC: ->Special FFnetDev Encoding: client wants alpha channel.\n");
+ 									UseAlpha = true;
+ 									break;
+ 								default:			
+ 									esyslog("[ffnetdev] VNC: ->Unknown encoding or unknown pseudo encoding.\n");
+ 							}
+ 							
+-							if (m_pEncoder != NULL)
+-							{
+-							    m_pEncoder->Init();
+-							    m_pEncoder->SetLocalFormat(ServerFormat, 720, 576);
+-							    m_pEncoder->SetCompressLevel(6);
+-							    m_pEncoder->SetQualityLevel(9);
+-							    m_pEncoder->SetRemoteFormat(ClientFormat);
+-							}
+ 							
+-							ClearScreen();
+ 						}
++						
++						if (m_pEncoder != NULL)
++						{
++						    m_pEncoder->Init();
++						    m_pEncoder->SetLocalFormat(ServerFormat, 720, 576);
++						    m_pEncoder->SetCompressLevel(6);
++						    m_pEncoder->SetQualityLevel(9);
++						    m_pEncoder->SetRemoteFormat(ClientFormat);
++						}
++						
++						ClearScreen();
++						
+ 						break;
+ 		case rfbFramebufferUpdateRequest:
+ 						if (!RFBRead( ((char*)&msg.fur)+1, sz_rfbFramebufferUpdateRequestMsg-1))
+
+Modified: trunk/osdworker.h
+===================================================================
+--- trunk/osdworker.h	2006-05-16 21:25:51 UTC (rev 18)
++++ trunk/osdworker.h	2006-05-16 22:38:03 UTC (rev 19)
+@@ -63,15 +63,14 @@
+ 	int 		OSDPort;
+ 	int 		state;
+ 	bool 		UseAlpha;
+-	int 		numOSDColors;
+ 	rfbPixelFormat  ClientFormat;
+ 	rfbPixelFormat  ServerFormat;
+ 	
+ 	BYTE		*m_pSendBuffer;
+ 	int		m_SendBufferSize;
+ 	cBitmap		*m_pOsdBitmap;
+-	tColor 		OSDColors[256];
+ 	bool 		m_bOSDisClear;
++	bool		m_bColorsChanged;
+ 
+ 	void HandleClientRequests(cTBSelect *select);
+ 	bool RFBRead(char *buffer, int len);
+
+
+
+From zwer at berlios.de  Thu May 18 00:49:00 2006
+From: zwer at berlios.de (zwer at berlios.de)
+Date: Thu, 18 May 2006 00:49:00 +0200
+Subject: [Ffnetdev-svncheckins] r20 - trunk
+Message-ID: <200605172249.k4HMn0fx010496@sheep.berlios.de>
+
+Author: zwer
+Date: 2006-05-18 00:48:53 +0200 (Thu, 18 May 2006)
+New Revision: 20
+
+Modified:
+   trunk/ffnetdev.c
+   trunk/ffnetdev.h
+   trunk/osdworker.c
+Log:
+- problem with OSD transparency on start fixed
+- #else, #elseif, #elif problem fixed
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2006-05-16 22:38:03 UTC (rev 19)
++++ trunk/ffnetdev.c	2006-05-17 22:48:53 UTC (rev 20)
+@@ -136,7 +136,7 @@
+  
+     return NULL;
+ }
+-#elseif
++#else
+ bool cPluginFFNetDev::Active(void) {
+     return (cOSDWorker::Active() || cTSWorker::Active());
+ }
+
+Modified: trunk/ffnetdev.h
+===================================================================
+--- trunk/ffnetdev.h	2006-05-16 22:38:03 UTC (rev 19)
++++ trunk/ffnetdev.h	2006-05-17 22:48:53 UTC (rev 20)
+@@ -47,7 +47,7 @@
+ 
+ #if VDRVERSNUM >= 10347
+   virtual cString Active(void);
+-#elseif
++#else
+   virtual bool Active(void);
+ #endif
+  
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-05-16 22:38:03 UTC (rev 19)
++++ trunk/osdworker.c	2006-05-17 22:48:53 UTC (rev 20)
+@@ -168,7 +168,7 @@
+     if (iNumColors != iOldNumColors)
+         m_Instance->m_bColorsChanged = true;
+ 	    
+-    m_Instance->SendScreen();
++    m_Instance->SendScreen(0, 0, 720, 576);
+ 
+     /*
+     rfbBellMsg fu;
+@@ -498,8 +498,10 @@
+ 						    m_pEncoder->SetCompressLevel(6);
+ 						    m_pEncoder->SetQualityLevel(9);
+ 						    m_pEncoder->SetRemoteFormat(ClientFormat);
++						    
+ 						}
+ 						
++						m_bColorsChanged = true;
+ 						ClearScreen();
+ 						
+ 						break;
+
+
+
+From zwer at berlios.de  Thu May 18 01:02:34 2006
+From: zwer at berlios.de (zwer at berlios.de)
+Date: Thu, 18 May 2006 01:02:34 +0200
+Subject: [Ffnetdev-svncheckins] r21 - trunk
+Message-ID: <200605172302.k4HN2YSA015170@sheep.berlios.de>
+
+Author: zwer
+Date: 2006-05-18 01:01:23 +0200 (Thu, 18 May 2006)
+New Revision: 21
+
+Modified:
+   trunk/osdworker.c
+Log:
+- OSD-Transparenz bei VDRViewer bei Version 0.1.4 sollte wieder passen
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-05-17 22:48:53 UTC (rev 20)
++++ trunk/osdworker.c	2006-05-17 23:01:23 UTC (rev 21)
+@@ -170,11 +170,12 @@
+ 	    
+     m_Instance->SendScreen(0, 0, 720, 576);
+ 
+-    /*
+-    rfbBellMsg fu;
+-    fu.type=rfbBell;
+-    OSDWrite((unsigned char*)&fu, sz_rfbBellMsg);
+-    */
++    if (m_Instance->ClientFormat.trueColour)
++    {
++	rfbBellMsg fu;
++	fu.type=rfbBell;
++	OSDWrite((unsigned char*)&fu, sz_rfbBellMsg);
++    }
+ 	
+     m_Instance->m_bOSDisClear = true;
+ 	
+
+
+
+From zwer at berlios.de  Fri May 19 00:31:35 2006
+From: zwer at berlios.de (zwer at berlios.de)
+Date: Fri, 19 May 2006 00:31:35 +0200
+Subject: [Ffnetdev-svncheckins] r22 - trunk
+Message-ID: <200605182231.k4IMVZ9X014428@sheep.berlios.de>
+
+Author: zwer
+Date: 2006-05-19 00:31:29 +0200 (Fri, 19 May 2006)
+New Revision: 22
+
+Modified:
+   trunk/osdworker.c
+Log:
+- fixed two bugs
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-05-17 23:01:23 UTC (rev 21)
++++ trunk/osdworker.c	2006-05-18 22:31:29 UTC (rev 22)
+@@ -56,6 +56,8 @@
+ 	ClientFormat.trueColour = 0;
+ 	m_bOSDisClear = true;
+ 	m_bColorsChanged = false;
++	
++	CreateSendBuffer(720 * 576);
+ }
+ 
+ cOSDWorker::~cOSDWorker() {
+@@ -209,14 +211,24 @@
+    if ((m_Instance->state==HANDSHAKE_OK) && (m_Instance->m_pEncoder != NULL) &&
+        (x1 || x2 || y1 || y2 || (m_Instance->m_pOsdBitmap->Dirty(x1, y1, x2, y2))))
+    {	    
++	dsyslog("[ffnetdev] VNC: Rect x/y/w/h %d/%d/%d/%d\n", x1, y1, x2-x1, y2-y1);
++	
++	if ((x2-x1) * (y2-y1) == 0)
++	{
++	    dsyslog("[ffnetdev] VNC: zero size rect - ignoring\n");
++	    
++	    return false;
++	}
++   
+ 	rfbFramebufferUpdateMsg fu;
+ 	struct timeval curtime;
+ 	gettimeofday(&curtime, 0);
+ 	curtime.tv_sec = curtime.tv_sec - (((int)curtime.tv_sec / 1000000) * 1000000);
+-	if ((curtime.tv_sec * 1000 + (curtime.tv_usec / 1000) < m_Instance->m_lasttime.tv_sec * 1000 + (m_Instance->m_lasttime.tv_usec / 1000) + 100) ||
+-    	    (m_Instance->m_pEncoder == NULL))
++	if (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000) < m_Instance->m_lasttime.tv_sec * 1000 + (m_Instance->m_lasttime.tv_usec / 1000) + 100)
+ 	{
+ 	    m_Instance->m_lasttime = curtime;	
++	    dsyslog("[ffnetdev] VNC: updatetime to short - ignoring\n");
++	    
+ 	    return false;
+ 	}
+ 	else
+@@ -236,9 +248,9 @@
+    	fu.type=rfbFramebufferUpdate;
+    	fu.nRects=Swap16IfLE(1);
+    	OSDWrite((unsigned char*)&fu, sz_rfbFramebufferUpdateMsg);
+-	int BufferSize = m_Instance->m_pEncoder->RequiredBuffSize(x2-x1, y2-y1);
+-	m_Instance->CreateSendBuffer(BufferSize);
+-	BufferSize = m_Instance->m_pEncoder->EncodeRect((BYTE*)(m_Instance->m_pOsdBitmap->Data(0, 0)), m_Instance->m_pSendBuffer, rect);
++	//int BufferSize = m_Instance->m_pEncoder->RequiredBuffSize(x2-x1, y2-y1);
++	//m_Instance->CreateSendBuffer(BufferSize);
++	int BufferSize = m_Instance->m_pEncoder->EncodeRect((BYTE*)(m_Instance->m_pOsdBitmap->Data(0, 0)), m_Instance->m_pSendBuffer, rect);
+ #ifdef DEBUG
+ 	fprintf(stderr, "[ffnetdev] VNC: Send OSD Data %d Bytes\n", BufferSize);
+ #endif
+
+
+

@@ -1,0 +1,341 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r26 - in trunk: . tools
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2007-January/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r26%20-%20in%20trunk%3A%20.%20tools&In-Reply-To=%3C200701232346.l0NNkgtT030103%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000010.html">
+   <LINK REL="Next"  HREF="000012.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r26 - in trunk: . tools</H1>
+    <B>zwer at mail.berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r26%20-%20in%20trunk%3A%20.%20tools&In-Reply-To=%3C200701232346.l0NNkgtT030103%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r26 - in trunk: . tools">zwer at mail.berlios.de
+       </A><BR>
+    <I>Wed Jan 24 00:46:42 CET 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000010.html">[Ffnetdev-svncheckins] r25 - in trunk: . tools
+</A></li>
+        <LI>Next message: <A HREF="000012.html">[Ffnetdev-svncheckins] r27 - trunk
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11">[ date ]</a>
+              <a href="thread.html#11">[ thread ]</a>
+              <a href="subject.html#11">[ subject ]</a>
+              <a href="author.html#11">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2007-01-24 00:46:34 +0100 (Wed, 24 Jan 2007)
+New Revision: 26
+
+Modified:
+   trunk/Makefile
+   trunk/ffnetdev.c
+   trunk/ffnetdev.h
+   trunk/streamdevice.c
+   trunk/streamdevice.h
+   trunk/tools/socket.c
+   trunk/tsworker.c
+   trunk/tsworker.h
+Log:
+- streamen bis ca. 6.6Mbit/s PES problemlos
+
+Modified: trunk/Makefile
+===================================================================
+--- trunk/Makefile	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/Makefile	2007-01-23 23:46:34 UTC (rev 26)
+@@ -53,8 +53,8 @@
+ 
+ SERVEROBJS = $(PLUGIN).o \
+ 	\
+-	ffnetdev.o ffnetdevsetup.o osdworker.o tsworker.o netosd.o streamdevice.o pes2ts.o remote.o \
+-	vncEncodeRRE.o vncEncodeCoRRE.o vncEncodeHexT.o \
++	ffnetdev.o ffnetdevsetup.o osdworker.o tsworker.o clientcontrol.o netosd.o streamdevice.o \
++	pes2ts.o remote.o vncEncodeRRE.o vncEncodeCoRRE.o vncEncodeHexT.o \
+ 	vncEncoder.o translate.o \
+ 		
+ ifdef DEBUG
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/ffnetdev.c	2007-01-23 23:46:34 UTC (rev 26)
+@@ -17,6 +17,7 @@
+ #include &quot;streamdevice.h&quot;
+ #include &quot;remote.h&quot;
+ #include &quot;osdworker.h&quot;
++#include &quot;clientcontrol.h&quot;
+ #include &quot;config.h&quot;
+ #include &quot;ffnetdevsetup.h&quot;
+ 
+@@ -57,6 +58,7 @@
+   // VDR OBJECTS TO EXIST OR PRODUCE ANY OUTPUT!
+   TSPort = STREAMPORT;
+   OSDPort = OSDPORT;
++  ControlPort = CONTROLPORT;
+   EnableRemote = false;
+   m_origPrimaryDevice = -1;
+   m_Remote = NULL;
+@@ -68,6 +70,7 @@
+ {
+   cOSDWorker::Exit();
+   cTSWorker::Exit();
++  cClientControl::Exit();
+   
+   delete m_Remote;
+ }
+@@ -78,6 +81,7 @@
+   return 
+   &quot;  -t PORT, --tsport PORT      port number for sending TS to.\n&quot;
+   &quot;  -o PORT, --osdport PORT     listen on this port for OSD connect.\n&quot;
++  &quot;  -c PORT, --controlport PORT listen on this port for ClientControl connect.\n&quot;
+   &quot;  -e 			 enable remote control over OSD connection.\n&quot;
+   &quot;\n&quot;;
+ }
+@@ -89,12 +93,13 @@
+   static struct option long_options[] = {
+       { &quot;tsport&quot;,    		required_argument	, NULL, 't' },
+       { &quot;osdport&quot;,   		required_argument	, NULL, 'o' },
++      { &quot;controlport&quot;,   	required_argument	, NULL, 'c' },
+       { &quot;enable-remote&quot;,   	no_argument		, NULL, 'e' },
+       { NULL, 			0			, NULL, 0 }
+   };
+ 
+   int c;
+-  while ((c = getopt_long(argc, argv, &quot;t:o:e&quot;, long_options, NULL)) != -1) {
++  while ((c = getopt_long(argc, argv, &quot;t:o:c:e&quot;, long_options, NULL)) != -1) {
+         switch (c) {
+           case 'e': EnableRemote = true;
+ 		    dsyslog(&quot;[ffnetdev] Remote enabled\n&quot;);
+@@ -121,6 +126,17 @@
+                     esyslog(&quot;[ffnetdev] invalid port number: %s\n&quot;, optarg);
+                     return 2;
+                     break;
++          case 'c': if (isnumber(optarg)) {
++                       int n = atoi(optarg);
++                       if (0 &lt; n &amp;&amp; n &lt; 65536) {
++                          ControlPort = n;
++                          dsyslog(&quot;[ffnetdev] ClientControl Port: %d\n&quot;, n);
++                          break;
++                       }
++                    }
++                    esyslog(&quot;[ffnetdev] invalid port number: %s\n&quot;, optarg);
++                    return 2;
++                    break;
+ 	  default : return 2;
+ 	}
+   }
+@@ -131,14 +147,14 @@
+ #if VDRVERSNUM &gt;= 10347
+ cString cPluginFFNetDev::Active(void) {
+ 
+-    if(cOSDWorker::Active() || cTSWorker::Active())
++    if(cOSDWorker::Active() || cTSWorker::Active() || cClientControl::Active())
+            return tr(&quot;ffnetdev is running&quot;);
+  
+     return NULL;
+ }
+ #else
+ bool cPluginFFNetDev::Active(void) {
+-    return (cOSDWorker::Active() || cTSWorker::Active());
++    return (cOSDWorker::Active() || cTSWorker::Active() || cClientControl::Active());
+ }
+ #endif
+ 
+@@ -150,6 +166,7 @@
+   	  
+   cOSDWorker::Init(OSDPort, this);
+   cTSWorker::Init(m_StreamDevice, TSPort, this);
++  cClientControl::Init(ControlPort, this);
+  
+   return true;
+ }
+
+Modified: trunk/ffnetdev.h
+===================================================================
+--- trunk/ffnetdev.h	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/ffnetdev.h	2007-01-23 23:46:34 UTC (rev 26)
+@@ -13,6 +13,7 @@
+ 
+ #define OSDPORT 20001
+ #define STREAMPORT 20002
++#define CONTROLPORT 20005
+ 
+ class cPluginFFNetDev : public cPlugin {
+ private:
+@@ -23,8 +24,9 @@
+ 	cMyRemote *m_Remote;
+ 	int OSDPort;
+ 	int TSPort;
++	int ControlPort;
+ 	bool EnableRemote;
+-	int  m_origPrimaryDevice;
++	int  m_origPrimaryDevice;	
+ 	
+ public:
+   cPluginFFNetDev(void);
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/streamdevice.c	2007-01-23 23:46:34 UTC (rev 26)
+@@ -9,12 +9,14 @@
+ #include &quot;osdworker.h&quot;
+ #include &quot;tsworker.h&quot;
+ #include &quot;netosd.h&quot;
++#include &quot;vdr/player.h&quot;
+ 
+ cStreamDevice::cStreamDevice(void)
+ {
+     dsyslog(&quot;[ffnetdev] Device: Constructor cStreamDevice \n&quot;);
+     //m_Remux = new cPES2TSRemux(TS_VPID, TS_APID);   
+-    m_Remux = new cPES2PESRemux();   
++    m_Remux = new cPES2PESRemux();  
++    m_Playing = false; 
+ }
+ 
+ cStreamDevice::~cStreamDevice(void)
+@@ -52,6 +54,17 @@
+    m_Remux-&gt;ClearInput();
+    m_Remux-&gt;ClearOutput();
+    m_Remux-&gt;PlayModeChange();
++   cControl *pControl = cControl::Control();
++   if (pControl)
++   {
++      bool Forward;
++      int Speed;
++      pControl-&gt;GetReplayMode(m_Playing, Forward, Speed);
++   }
++   else
++   {
++      m_Playing = false;
++   }
+    return true;
+ }
+ 
+@@ -114,7 +127,8 @@
+ {
+    if (cTSWorker::HaveStreamClient()) 
+    {
+-       while ((m_Remux-&gt;InputFree() &lt; Length) &amp;&amp; cTSWorker::HaveStreamClient())
++       while (((m_Remux-&gt;InputFree() &lt; Length) &amp;&amp; (!m_Playing) ||
++               (m_Remux-&gt;Available() &gt; TCP_SEND_SIZE * 10) &amp;&amp; (m_Playing)) &amp;&amp; cTSWorker::HaveStreamClient())
+            cCondWait::SleepMs(1);
+        int result=m_Remux-&gt;Put(Data, Length);
+        if (result!=Length) {
+@@ -144,7 +158,8 @@
+    if (cTSWorker::HaveStreamClient()) 
+    {
+ 
+-       while ((m_Remux-&gt;InputFree() &lt; Length) &amp;&amp; cTSWorker::HaveStreamClient())
++       while (((m_Remux-&gt;InputFree() &lt; Length) &amp;&amp; (!m_Playing) ||
++               (m_Remux-&gt;Available() &gt; TCP_SEND_SIZE * 10) &amp;&amp; (m_Playing)) &amp;&amp; cTSWorker::HaveStreamClient())
+            cCondWait::SleepMs(1);
+        int result=m_Remux-&gt;Put(Data, Length);
+        if (result!=Length) {
+
+Modified: trunk/streamdevice.h
+===================================================================
+--- trunk/streamdevice.h	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/streamdevice.h	2007-01-23 23:46:34 UTC (rev 26)
+@@ -18,6 +18,7 @@
+ class cStreamDevice: public cDevice {
+ private:
+ 	  cPESRemux *m_Remux;
++	  bool       m_Playing;
+ protected:
+ public:
+   cStreamDevice(void);
+
+Modified: trunk/tools/socket.c
+===================================================================
+--- trunk/tools/socket.c	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/tools/socket.c	2007-01-23 23:46:34 UTC (rev 26)
+@@ -9,7 +9,7 @@
+ #include &lt;fcntl.h&gt;
+ 
+ #define UDP_TX_BUF_SIZE (188*348)
+-//#define TCP_TX_BUF_SIZE (1024 * 30)
++//#define TCP_TX_BUF_SIZE (1024 * 60)
+ 
+ cTBSocket::cTBSocket(int Type) {
+ 	memset(&amp;m_LocalAddr, 0, sizeof(m_LocalAddr));
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/tsworker.c	2007-01-23 23:46:34 UTC (rev 26)
+@@ -19,7 +19,6 @@
+ #define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
+ #define UDP_MAX_BITRATE 8112832
+ #define UDP_SEND_INTERVALL 1000
+-#define TCP_SEND_SIZE (1024 * 10)
+ 
+ // 8388608 = 8MBit
+ struct TSData
+@@ -101,12 +100,12 @@
+ 	m_Active		= true;
+ 	have_Streamclient	= false;
+ 
+-        if (!m_StreamListen.Listen(m_ListenIp, m_StreamListenPort, 1)) { // ToDo JN place to allow more connections/clients!
++   if (!m_StreamListen.Listen(m_ListenIp, m_StreamListenPort, 1)) { // ToDo JN place to allow more connections/clients!
+ 		esyslog(&quot;[ffnetdev] Streamer: Couldn't listen %s:%d: %s&quot;, m_ListenIp, m_StreamListenPort, strerror(errno));
+ 		m_Active = false;
+ 	} 
+ 	else
+-	        isyslog(&quot;[ffnetdev] Streamer: Listening on port %d&quot;, m_StreamListenPort);
++      isyslog(&quot;[ffnetdev] Streamer: Listening on port %d&quot;, m_StreamListenPort);
+ 
+ 	while (m_Active) {
+ 		select.Clear();
+
+Modified: trunk/tsworker.h
+===================================================================
+--- trunk/tsworker.h	2007-01-16 22:57:40 UTC (rev 25)
++++ trunk/tsworker.h	2007-01-23 23:46:34 UTC (rev 26)
+@@ -18,7 +18,9 @@
+ 
+ typedef unsigned long long u64;
+ 
++#define TCP_SEND_SIZE (1024 * 20)
+ 
++
+ // --- cTSWorker -------------------------------------------------------------
+ 
+ class cTSWorker : public cThread {
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000010.html">[Ffnetdev-svncheckins] r25 - in trunk: . tools
+</A></li>
+	<LI>Next message: <A HREF="000012.html">[Ffnetdev-svncheckins] r27 - trunk
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#11">[ date ]</a>
+              <a href="thread.html#11">[ thread ]</a>
+              <a href="subject.html#11">[ subject ]</a>
+              <a href="author.html#11">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

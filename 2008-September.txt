@@ -1,0 +1,106 @@
+From zwer at mail.berlios.de  Thu Sep  4 22:16:50 2008
+From: zwer at mail.berlios.de (zwer at mail.berlios.de)
+Date: Thu, 4 Sep 2008 22:16:50 +0200
+Subject: [Ffnetdev-svncheckins] r34 - trunk
+Message-ID: <200809042016.m84KGoqa031566@sheep.berlios.de>
+
+Author: zwer
+Date: 2008-09-04 22:16:47 +0200 (Thu, 04 Sep 2008)
+New Revision: 34
+
+Modified:
+   trunk/ffnetdev.c
+   trunk/netosd.c
+   trunk/netosd.h
+   trunk/remote.c
+   trunk/remote.h
+Log:
+Lauff?\195?\164hg unter VDR 1.6.0 gemacht
+
+
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/ffnetdev.c	2008-09-04 20:16:47 UTC (rev 34)
+@@ -33,10 +33,10 @@
+ 	
+ }
+ 
+-cOsd * cNetOSDProvider::CreateOsd(int Left, int Top)
++cOsd * cNetOSDProvider::CreateOsd(int Left, int Top, uint Level)
+ {
+     
+-    osd = new cNetOSD(Left, Top);
++    osd = new cNetOSD(Left, Top, Level);
+     return osd;
+ }
+ 
+
+Modified: trunk/netosd.c
+===================================================================
+--- trunk/netosd.c	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/netosd.c	2008-09-04 20:16:47 UTC (rev 34)
+@@ -9,7 +9,7 @@
+ #include "osdworker.h"
+ 
+ //////////////////////////////////////////////////////////////////////////////////////////////////
+-cNetOSD::cNetOSD(int Left, int Top) : cOsd(Left, Top)
++cNetOSD::cNetOSD(int XOfs, int YOfs, uint Level) : cOsd(XOfs, YOfs, Level)
+ {
+ #ifdef DEBUG   
+    fprintf(stderr,"[ffnetdev] NetOSD: Constructor cNetOSD.\n");
+
+Modified: trunk/netosd.h
+===================================================================
+--- trunk/netosd.h	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/netosd.h	2008-09-04 20:16:47 UTC (rev 34)
+@@ -17,7 +17,7 @@
+ 	bool truecolor;
+ protected:
+ public:
+-    cNetOSD(int XOfs, int XOfs);
++    cNetOSD(int XOfs, int YOfs, uint Level = OSD_LEVEL_DEFAULT);
+     virtual ~cNetOSD();
+     virtual eOsdError CanHandleAreas(const tArea *Areas, int NumAreas);
+     virtual void Flush(void);
+@@ -31,7 +31,7 @@
+     cNetOSD **NetOSD;
+ public:
+     cNetOSDProvider(void);
+-    virtual cOsd *CreateOsd(int Left, int Top);
++    virtual cOsd *CreateOsd(int Left, int Top, uint Level);
+ };
+ 
+ #endif //_NETOSD__H
+
+Modified: trunk/remote.c
+===================================================================
+--- trunk/remote.c	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/remote.c	2008-09-04 20:16:47 UTC (rev 34)
+@@ -27,7 +27,7 @@
+ 	return true;
+ }
+ 
+-bool cMyRemote::Put(uint64 Code, bool Repeat, bool Release)
++bool cMyRemote::Put(uint64_t Code, bool Repeat, bool Release)
+ {
+ #if VDRVERSNUM >= 10347
+     if ((cRemote::IsLearning()) && (Release))
+
+Modified: trunk/remote.h
+===================================================================
+--- trunk/remote.h	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/remote.h	2008-09-04 20:16:47 UTC (rev 34)
+@@ -17,7 +17,7 @@
+   cMyRemote(const char *Name);
+   virtual bool Initialize(void);
+   virtual bool Ready(void);
+-  virtual bool Put(uint64 Code, bool Repeat, bool Release);
++  virtual bool Put(uint64_t Code, bool Repeat, bool Release);
+ };
+ 
+ 
+
+
+

@@ -1,0 +1,183 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r33 - trunk
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2007-September/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r33%20-%20trunk&In-Reply-To=%3C200709281420.l8SEKVD4016386%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r33 - trunk</H1>
+    <B>zwer at mail.berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r33%20-%20trunk&In-Reply-To=%3C200709281420.l8SEKVD4016386%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r33 - trunk">zwer at mail.berlios.de
+       </A><BR>
+    <I>Fri Sep 28 16:20:31 CEST 2007</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#18">[ date ]</a>
+              <a href="thread.html#18">[ thread ]</a>
+              <a href="subject.html#18">[ subject ]</a>
+              <a href="author.html#18">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2007-09-28 16:20:03 +0200 (Fri, 28 Sep 2007)
+New Revision: 33
+
+Modified:
+   trunk/CHANGELOG
+   trunk/Makefile
+Log:
+- added compiling switch 'FFNETDEV_DEBUG'
+
+
+Modified: trunk/CHANGELOG
+===================================================================
+--- trunk/CHANGELOG	2007-08-28 23:12:52 UTC (rev 32)
++++ trunk/CHANGELOG	2007-09-28 14:20:03 UTC (rev 33)
+@@ -34,4 +34,61 @@
+     - tested with vdr-1.3.43
+     
+   2006-02-27:
+-    - fixed version conflict on cStreamDevice::PlayAudio
+\ No newline at end of file
++    - fixed version conflict on cStreamDevice::PlayAudio
++    
++  2006-04-29
++    - AC3-Streaming, compatible with vdr &gt;= 1.3.47
++    
++  2006-05-03
++    - Kleinigkeit am Anlernvorgang angepasst
++    
++  2006-05-08
++    - add multi area OSD support. You can use all plugins and all skins.
++    
++  2006-05-16
++    - fixing socket handle bug, reported from vdr-mailing list
++    - allow to compile with VDR smaller than 10347
++    
++  2006-05-17
++    - add ColorMap support
++    
++  2006-05-18
++    - problem with OSD transparency on start fixed
++    - #else, #elseif, #elif problem fixed
++    - OSD-Transparenz bei VDRViewer bei Version 0.1.4 sollte wieder passen
++    
++  2006-05-19
++    - fixed two bugs
++  
++  2006-06-10
++    - fixed a Bug
++    
++  2007-01-16
++    - auf PES-Streaming umgestellt
++    
++  2007-01-24
++    - streamen bis ca. 6.6Mbit/s PES problemlos
++    
++  2007-01-31
++    - ClientControl eingef&#252;hrt
++    
++  2007-02-12
++    - noch h&#246;here Bitrate jetzt m&#246;glich
++    - wiedergabe von DVD
++    
++  2007-02-18
++    - vor- und zur&#252;ckspulen mit versch. Geschwindigkeiten, Pause
++    - DVD-Wedergabe macht Probleme
++    
++  2007-03-29
++    - Workaround for Clear
++    
++  2007-07-02
++    - sporadischen Fehler in VNC-Protokoll behoben
++    
++  2007-08-29:
++    - Plugin l&#228;sst sich jetzt sauber beenden (beim beenden vom VDR gab es Probleme)
++    
++  2007-09-28: 
++    - added compiling switch 'FFNETDEV_DEBUG'
++    
+
+Modified: trunk/Makefile
+===================================================================
+--- trunk/Makefile	2007-08-28 23:12:52 UTC (rev 32)
++++ trunk/Makefile	2007-09-28 14:20:03 UTC (rev 33)
+@@ -7,8 +7,11 @@
+ # By default the main source file also carries this name.
+ #
+ PLUGIN = ffnetdev
+-DEBUG = 1 
+ 
++# Debugging on/off
++FFNETDEV_DEBUG = 1
++
++
+ ### The version number of this plugin (taken from the main source file):
+ 
+ VERSION = $(shell grep 'const char .*VERSION *=' ffnetdev.c | awk '{ print $$5 }' | sed -e 's/[&quot;;]//g')
+@@ -44,20 +47,25 @@
+ 
+ DEFINES += -D_GNU_SOURCE -DPLUGIN_NAME_I18N='&quot;$(PLUGIN)&quot;'
+ 
++
+ ### The object files (add further files here):
+ 
+ COMMONOBJS = i18n.o \
+ 	\
+ 	tools/source.o tools/select.o tools/socket.o tools/tools.o 
+-	
+ 
++
+ SERVEROBJS = $(PLUGIN).o \
+ 	\
+ 	ffnetdev.o ffnetdevsetup.o osdworker.o tsworker.o clientcontrol.o netosd.o streamdevice.o \
+ 	pes2ts.o remote.o vncEncodeRRE.o vncEncodeCoRRE.o vncEncodeHexT.o \
+ 	vncEncoder.o translate.o \
+-		
++
+ ifdef DEBUG
++	FFNETDEV_DEBUG = 1
++endif
++
++ifdef FFNETDEV_DEBUG
+ 	DEFINES += -DDEBUG
+ 	CXXFLAGS += -g
+ else
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#18">[ date ]</a>
+              <a href="thread.html#18">[ thread ]</a>
+              <a href="subject.html#18">[ subject ]</a>
+              <a href="author.html#18">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

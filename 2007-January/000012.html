@@ -1,0 +1,846 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r27 - trunk
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2007-January/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r27%20-%20trunk&In-Reply-To=%3C200701302331.l0UNV5rs027448%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000011.html">
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r27 - trunk</H1>
+    <B>zwer at mail.berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r27%20-%20trunk&In-Reply-To=%3C200701302331.l0UNV5rs027448%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r27 - trunk">zwer at mail.berlios.de
+       </A><BR>
+    <I>Wed Jan 31 00:31:05 CET 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000011.html">[Ffnetdev-svncheckins] r26 - in trunk: . tools
+</A></li>
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12">[ date ]</a>
+              <a href="thread.html#12">[ thread ]</a>
+              <a href="subject.html#12">[ subject ]</a>
+              <a href="author.html#12">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2007-01-31 00:30:54 +0100 (Wed, 31 Jan 2007)
+New Revision: 27
+
+Added:
+   trunk/clientcontrol.c
+   trunk/clientcontrol.h
+Modified:
+   trunk/ffnetdev.c
+   trunk/ffnetdev.h
+   trunk/pes2ts.c
+   trunk/pes2ts.h
+   trunk/streamdevice.c
+   trunk/streamdevice.h
+   trunk/tsworker.c
+Log:
+- ClientControl eingef?\195?\188hrt
+
+Added: trunk/clientcontrol.c
+===================================================================
+--- trunk/clientcontrol.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/clientcontrol.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -0,0 +1,227 @@
++/* 
++ * tsworker.c: ts streaming worker thread
++ *
++ * See the README file for copyright information and how to reach the author.
++ *
++ */
++
++#include &lt;sys/time.h&gt;
++
++#include &lt;vdr/tools.h&gt;
++
++#include &quot;tools/socket.h&quot;
++#include &quot;tools/select.h&quot;
++
++#include &quot;clientcontrol.h&quot;
++#include &quot;config.h&quot;
++
++
++//////////////////////////////////////////////////////////////////////////////////////////////////
++//////////////////////////////////////////////////////////////////////////////////////////////////
++
++cClientControl *cClientControl::m_Instance = NULL;
++
++cClientControl::cClientControl(void)
++		: cThread(&quot;[ffnetdev] ClientControl&quot;)
++{
++	m_Active = false;	
++	m_ClientSocket = NULL;
++}
++
++cClientControl::~cClientControl() 
++{
++	if (m_Active) 
++	   Stop();
++	delete m_ClientSocket;
++}
++
++void cClientControl::Init(int iPort, cPluginFFNetDev *pPlugin) 
++{
++	if (m_Instance == NULL) 
++	{
++		m_Instance = new cClientControl;
++		m_Instance-&gt;m_pPlugin = pPlugin;
++		m_Instance-&gt;m_iPort = iPort;
++		m_Instance-&gt;Start();
++		m_Instance-&gt;m_bCloseClientRequest = false;
++		m_Instance-&gt;m_bPlayStateReq = false;
++	}
++}
++
++void cClientControl::Exit(void) 
++{
++	if (m_Instance != NULL) 
++	{
++		m_Instance-&gt;Stop();
++		DELETENULL(m_Instance);
++	}
++}
++
++void cClientControl::Stop(void)
++{
++	m_Active = false;
++	Cancel(3);
++}
++
++void cClientControl::CloseStreamClient(void) 
++{
++	m_Instance-&gt;m_bCloseClientRequest = true;
++#ifdef DEBUG
++	fprintf(stderr, &quot;[ffnetdev] Streamer: Closing of ClientControl client socket requested.\r\n&quot;);
++#endif
++}
++
++void cClientControl::Action(void) 
++{
++	cTBSelect select;
++	cTBSocket m_StreamListen;
++	int ret;
++   
++	const char* m_ListenIp = &quot;0.0.0.0&quot;;
++	uint iPort = m_iPort;
++
++	m_ClientSocket 	= new cTBSocket;
++
++	m_Active		= true;
++	m_bHaveClient	= false;
++
++   if (!m_StreamListen.Listen(m_ListenIp, iPort, 1)) { // ToDo JN place to allow more connections/clients!
++		esyslog(&quot;[ffnetdev] ClientControl: Couldn't listen %s:%d: %s&quot;, m_ListenIp, iPort, strerror(errno));
++		m_Active = false;
++	} 
++	else
++      isyslog(&quot;[ffnetdev] ClientControl: Listening on port %d&quot;, iPort);
++
++	while (m_Active) {
++		select.Clear();
++		
++		if (m_bHaveClient==false)
++			select.Add(m_StreamListen, false);
++		else {
++			select.Add(*m_ClientSocket, true);  //select for writing fd
++			select.Add(*m_ClientSocket, false);	//select for reading fd
++		}
++
++		int numfd;
++		/* React on status change of any of the above file descriptor */
++		if ((numfd=select.Select(1000)) &lt; 0) {
++			if (!m_Active) // Exit was requested while polling
++				continue;
++			esyslog(&quot;[ffnetdev] ClientControl: Fatal error, ffnetdev exiting: %s&quot;, strerror(errno));
++			m_Active = false;
++			continue;
++		}
++		
++		
++		/* Accept connecting	*/
++		if ( (m_bHaveClient==false)&amp;&amp;select.CanRead(m_StreamListen) ) {
++			if (m_ClientSocket-&gt;Accept(m_StreamListen)) {
++				isyslog(&quot;[ffnetdev] ClientControl: Accepted client %s:%d&quot;,
++					m_ClientSocket-&gt;RemoteIp().c_str(), m_ClientSocket-&gt;RemotePort());
++				m_bHaveClient = true;
++			} 
++			else {
++				esyslog(&quot;[ffnetdev] Streamer: Couldn't accept : %s&quot;, strerror(errno));
++				m_bHaveClient = false;
++				m_Active = false;
++				continue;
++			}
++		}
++
++		
++		/* Check for closed client connection */		
++		if (m_bHaveClient==true) { 
++			if (m_bCloseClientRequest==true) {
++				m_bCloseClientRequest = false;
++				m_bHaveClient = false;
++				
++				if ( m_ClientSocket-&gt;Close() ) {
++#ifdef DEBUG
++					fprintf(stderr, &quot;[ffnetdev] ClientControl: Client socket closed successfully.\n&quot;);
++#endif
++					isyslog(&quot;[ffnetdev] ClientControl: Connection closed: client %s:%d&quot;,
++						 m_ClientSocket-&gt;RemoteIp().c_str(), m_ClientSocket-&gt;RemotePort());
++				}
++				else
++					{
++#ifdef DEBUG
++					   fprintf(stderr, &quot;[ffnetdev] ClientControl: Error closing client socket.\n&quot;);
++#endif
++					   esyslog(&quot;[ffnetdev] ClientControl: Error closing connection.&quot;);
++					   m_Active=false;
++					   continue;
++					} 
++					  
++			}
++			
++			if ( select.CanWrite(*m_ClientSocket) ) 
++			{
++			
++			}
++			
++			if ( select.CanRead(*m_ClientSocket) )
++			{
++			   SClientControl data;
++			   SClientControlInfo info;
++			   
++			   if ( (ret = m_ClientSocket-&gt;Read(&amp;data, sizeof(data))) == sizeof(data)) 
++			   {
++			      switch (data.pakType)
++			      {
++			      case ptInfo: 
++			         if (m_ClientSocket-&gt;Read(&amp;info, data.dataLen) == data.dataLen)
++                     m_pPlugin-&gt;SetClientName(info.clientName);			         
++                  dsyslog(&quot;clientName %s, data.dataLen %d %d&quot;, info.clientName, data.dataLen, sizeof(data));
++			         break;
++			      
++			      case ptPlayStateReq: 
++			         m_bPlayStateReq = true;
++			         break;
++			         
++			      default:
++			         break;
++			      }
++			   }
++			   else if (ret == 0)
++   			{
++   			   CloseStreamClient();
++   			}
++		   }
++		} 
++
++		cCondWait::SleepMs(3);
++
++	} // while(m_Active)
++
++}
++
++
++bool cClientControl::SendPlayState(ePlayMode PlayMode, bool bPlay, bool bForward, int iSpeed) 
++{
++   SClientControl data;
++   SClientControlPlayState state;
++       
++   int ret;
++   
++   if ((m_Instance == NULL) || (m_Instance-&gt;m_ClientSocket == NULL))
++      return false;
++
++   m_Instance-&gt;m_bPlayStateReq = false;
++
++   state.PlayMode = PlayMode;
++   state.Play = bPlay;
++   state.Forward = bForward;
++   state.Speed = iSpeed;
++   
++   data.pakType = ptPlayState;
++   data.dataLen = sizeof(state);
++   if ((ret = m_Instance-&gt;m_ClientSocket-&gt;Write(&amp;data, sizeof(data))) == sizeof(data))
++   {
++      if ((ret = m_Instance-&gt;m_ClientSocket-&gt;Write(&amp;state, sizeof(state))) == sizeof(state))
++         return true;
++      else
++         return false;
++   }
++   else
++      return false;
++}
+
+Added: trunk/clientcontrol.h
+===================================================================
+--- trunk/clientcontrol.h	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/clientcontrol.h	2007-01-30 23:30:54 UTC (rev 27)
+@@ -0,0 +1,77 @@
++/*
++ * clientcontrol.h: ClientControl thread 
++ *
++ * See the README file for copyright information and how to reach the author.
++ *
++ */
++
++#ifndef _CLIENTCONTROL__H
++#define _CLIENTCONTROL__H
++
++#include &lt;vdr/thread.h&gt;
++
++#include &quot;tools/socket.h&quot;
++#include &quot;ffnetdev.h&quot;
++
++enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq };
++
++struct SClientControl
++{
++   char pakType;
++   char dataLen;
++   char data[0];
++};
++
++struct SClientControlInfo
++{
++   char clientName[20];
++};
++
++struct SClientControlPlayState
++{
++   char PlayMode;
++   bool Play;
++   bool Forward;
++   char Speed;
++};
++
++
++// --- cClientControl -------------------------------------------------------------
++
++class cClientControl : public cThread {
++private:
++	bool m_Active;
++	bool m_bHaveClient;
++	bool m_bCloseClientRequest;
++	static cClientControl *m_Instance;
++	cTBSocket *m_ClientSocket;
++	int m_iPort;
++	cPluginFFNetDev *m_pPlugin;
++	bool m_bPlayStateReq;
++
++protected:
++	virtual void Action(void);
++	void Stop(void);
++public:
++	cClientControl(void);
++	virtual ~cClientControl();
++
++	static void Init(int, cPluginFFNetDev*);
++	static void Exit(void);
++	static bool Active(void);
++	
++	static bool HaveClient(void);
++	static void CloseStreamClient(void);
++	
++	static bool SendPlayState(ePlayMode PlayMode, bool bPlay, bool bForward, int iSpeed);
++	static bool PlayStateReq(void) { return m_Instance-&gt;m_bPlayStateReq; };
++};
++
++inline bool cClientControl::Active(void) {
++    return m_Instance &amp;&amp; (m_Instance-&gt;m_bHaveClient==true);
++}
++
++inline bool cClientControl::HaveClient(void) {
++	return m_Instance-&gt;m_bHaveClient;
++}
++#endif
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/ffnetdev.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -211,60 +211,82 @@
+ 
+ void cPluginFFNetDev::SetPrimaryDevice()
+ {	
+-    int i = 0;
+-    while ((cOsd::IsOpen() &gt; 0) &amp;&amp; (i-- &gt; 0))
+-	cRemote::Put(kBack);
+-	
+-    if ((config.iAutoSetPrimaryDVB == 1) &amp;&amp; (m_origPrimaryDevice == -1))
+-    {
+-        cDevice *PrimaryDevice;
+-        if ((PrimaryDevice = cDevice::PrimaryDevice()) != NULL)
+-    	    m_origPrimaryDevice = PrimaryDevice-&gt;DeviceNumber() + 1;
+-	else
+-	    m_origPrimaryDevice = -1;
+-	    
+-	if (m_StreamDevice-&gt;DeviceNumber() + 1 != m_origPrimaryDevice)
+-	{
+-	    cDevice::SetPrimaryDevice(m_StreamDevice-&gt;DeviceNumber() + 1);
+-	    isyslog(&quot;[ffnetdev] set Primary Device to %d&quot;, m_StreamDevice-&gt;DeviceNumber() + 1);
+-	}
+-	else
+-	{
+-	    m_origPrimaryDevice = -1;
+-	}
+-    }
+-    
+-    if(EnableRemote) 
+-    {
+-	if (m_Remote == NULL)
+-	    m_Remote = new cMyRemote(&quot;ffnetdev&quot;);
+-	    
+-	if (!cRemote::HasKeys())
+-	    new cLearningThread();
+-	dsyslog(&quot;[ffnetdev] remote control enabled.\n&quot;);
+-    }
+-    else 
+-    {
+-	dsyslog(&quot;[ffnetdev] remote control disabled.\n&quot;);
+-    }
++   int i = 0;
++   while ((cOsd::IsOpen() &gt; 0) &amp;&amp; (i-- &gt; 0))
++   cRemote::Put(kBack);
++   
++   if ((config.iAutoSetPrimaryDVB == 1) &amp;&amp; (m_origPrimaryDevice == -1))
++   {
++      cDevice *PrimaryDevice;
++      if ((PrimaryDevice = cDevice::PrimaryDevice()) != NULL)
++         m_origPrimaryDevice = PrimaryDevice-&gt;DeviceNumber() + 1;
++      else
++         m_origPrimaryDevice = -1;
++      
++      if (m_StreamDevice-&gt;DeviceNumber() + 1 != m_origPrimaryDevice)
++      {
++         cDevice::SetPrimaryDevice(m_StreamDevice-&gt;DeviceNumber() + 1);
++         isyslog(&quot;[ffnetdev] set Primary Device to %d&quot;, m_StreamDevice-&gt;DeviceNumber() + 1);
++      }
++      else
++      {
++         m_origPrimaryDevice = -1;
++      }
++   }
++   
++   if(EnableRemote) 
++   {
++      if (m_Remote == NULL)
++      {
++         char str[30];
++         if (strlen(m_ClientName) &gt; 0)
++            sprintf(str, &quot;ffnetdev-%s&quot;, m_ClientName);
++         else
++            strcpy(str, &quot;ffnetdev&quot;);
++         
++         m_Remote = new cMyRemote(str);
++      }
++   
++      if (!cRemote::HasKeys())
++         new cLearningThread();
++      dsyslog(&quot;[ffnetdev] remote control enabled.\n&quot;);
++   }
++   else 
++   {
++      dsyslog(&quot;[ffnetdev] remote control disabled.\n&quot;);
++   }
+ }
+ 
+ 
+ void cPluginFFNetDev::RestorePrimaryDevice()
+ {
+-    int i = 10;
+-    while ((cOsd::IsOpen() &gt; 0) &amp;&amp; (i-- &gt; 0))
+-	cRemote::Put(kBack);
++   int i = 10;
++   while ((cOsd::IsOpen() &gt; 0) &amp;&amp; (i-- &gt; 0))
++      cRemote::Put(kBack);
++   
++   dsyslog(&quot;[ffnetdev] remote control disabled.\n&quot;);
++   
++   if (m_origPrimaryDevice != -1)
++   {
++      cDevice::SetPrimaryDevice(m_origPrimaryDevice);
++      isyslog(&quot;[ffnetdev] restore Primary Device to %d&quot;, m_origPrimaryDevice);
++      m_origPrimaryDevice = -1;
++      sleep(5);
++   }					
++   
++   m_ClientName[0] = '\0';
++   if (m_Remote)
++   {
++      Remotes.Del(m_Remote);
++      m_Remote = NULL;
++   }
++   dsyslog(&quot;[ffnetdev] -------------------\n&quot;);
++}
+ 
+-    dsyslog(&quot;[ffnetdev] remote control disabled.\n&quot;);
+-    
+-    if (m_origPrimaryDevice != -1)
+-    {
+-        cDevice::SetPrimaryDevice(m_origPrimaryDevice);
+-        isyslog(&quot;[ffnetdev] restore Primary Device to %d&quot;, m_origPrimaryDevice);
+-        m_origPrimaryDevice = -1;
+-        sleep(5);
+-    }					
++void cPluginFFNetDev::SetClientName(char* ClientName)
++{
++   strcpy(m_ClientName, ClientName);
++   dsyslog(&quot;[ffnetdev] SetClientname %s&quot;, m_ClientName);
+ }
+ 
+ 
+
+Modified: trunk/ffnetdev.h
+===================================================================
+--- trunk/ffnetdev.h	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/ffnetdev.h	2007-01-30 23:30:54 UTC (rev 27)
+@@ -27,6 +27,7 @@
+ 	int ControlPort;
+ 	bool EnableRemote;
+ 	int  m_origPrimaryDevice;	
++	char m_ClientName[20];
+ 	
+ public:
+   cPluginFFNetDev(void);
+@@ -57,6 +58,7 @@
+   void SetPrimaryDevice();
+   void RestorePrimaryDevice();
+   cMyRemote *GetRemote() { return m_Remote; }
++  void SetClientName(char* ClientName);
+ };
+ 
+ #endif
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/pes2ts.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -39,8 +39,7 @@
+ cPES2TSRemux::cPES2TSRemux(int VPid, int APid): cPESRemux(INPUTBUFSIZE, IPACKS),
+     cThread(&quot;[ffnetdev] PES2TS remux&quot;),
+     m_OutputBuffer(new cRingBufferLinear(OUTPUTBUFSIZE, TS_SIZE * 2)),
+-    m_Active(false),
+-    m_PlayModeChanged(false)
++    m_Active(false)
+ {
+   vpid = VPid;
+   apid = APid;
+@@ -73,12 +72,6 @@
+ //    fprintf(stderr, &quot;[ffnetdev] Remuxer: Inputbuffersize: %d, Outputbuffersize: %d\n&quot;, 
+ //	    m_InputBuffer-&gt;Available(), m_OutputBuffer-&gt;Available());
+ 
+-    if (m_PlayModeChanged)
+-    {
+-	   cCondWait::SleepMs(1500);
+-	   m_PlayModeChanged = false;
+-    }
+-
+     if (m_InputBuffer-&gt;Available() &lt; (int)IPACKS*10) {	
+ 	cCondWait::SleepMs(5);
+ 	continue;
+
+Modified: trunk/pes2ts.h
+===================================================================
+--- trunk/pes2ts.h	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/pes2ts.h	2007-01-30 23:30:54 UTC (rev 27)
+@@ -40,8 +40,6 @@
+    virtual void ClearOutput() = 0;
+    void LockOutput()   { while (OutputLocked) cCondWait::SleepMs(1); OutputLocked = true; }
+    void UnlockOutput() { OutputLocked = false; }
+-	virtual void PlayModeChange() {}; 
+-   
+ };
+ 
+ class cPES2TSRemux: public cPESRemux, cThread {
+@@ -50,7 +48,6 @@
+ 	bool               m_Active;
+ 	unsigned short	   vpid;
+ 	unsigned short	   apid;
+-	bool 		   m_PlayModeChanged;
+   
+ protected:
+ 	virtual void Action(void);
+@@ -65,8 +62,6 @@
+ 	uchar *Get(int &amp;Count) { return  m_OutputBuffer-&gt;Get(Count); }
+ 	void DelOutput(int Count) { m_OutputBuffer-&gt;Del(Count); }
+ 	void ClearOutput() { LockOutput(); m_OutputBuffer-&gt;Clear(); UnlockOutput(); }
+-	void PlayModeChange() { m_PlayModeChanged = true; } 
+-	
+ };
+ 
+ class cPES2PESRemux: public cPESRemux {
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/streamdevice.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -5,11 +5,12 @@
+  *
+  */
+  
++#include &quot;vdr/player.h&quot;
+ #include &quot;streamdevice.h&quot;
+ #include &quot;osdworker.h&quot;
+ #include &quot;tsworker.h&quot;
+ #include &quot;netosd.h&quot;
+-#include &quot;vdr/player.h&quot;
++#include &quot;clientcontrol.h&quot;
+ 
+ cStreamDevice::cStreamDevice(void)
+ {
+@@ -17,6 +18,8 @@
+     //m_Remux = new cPES2TSRemux(TS_VPID, TS_APID);   
+     m_Remux = new cPES2PESRemux();  
+     m_Playing = false; 
++    m_PlayState = psPlay;
++    m_PlayMode  = pmNone;
+ }
+ 
+ cStreamDevice::~cStreamDevice(void)
+@@ -51,42 +54,70 @@
+ {
+    dsyslog(&quot;[ffnetdev] Device: Setting playmode. Mode: %d\n&quot;,PlayMode);
+    cOSDWorker::SendPlayMode(PlayMode);
+-   m_Remux-&gt;ClearInput();
+-   m_Remux-&gt;ClearOutput();
+-   m_Remux-&gt;PlayModeChange();
++      
++   m_PlayMode = PlayMode;
++   if (PlayMode == pmNone)
++   {
++      m_PlayState = psBufferReset;
++      m_Remux-&gt;ClearInput();
++      m_Remux-&gt;ClearOutput();
++   }
++   else
++   {
++      while (((m_PlayState == psBufferReset) || (m_PlayState == psBufferReseted)) &amp;&amp; 
++             (!cClientControl::PlayStateReq()) &amp;&amp; (cTSWorker::HaveStreamClient()))
++         cCondWait::SleepMs(10);
++      dsyslog(&quot;[ffnetdev] PlayStateReq\n&quot;);   
++      m_PlayState = psPlay;
++   }
++   
+    cControl *pControl = cControl::Control();
+    if (pControl)
+    {
+       bool Forward;
+       int Speed;
+       pControl-&gt;GetReplayMode(m_Playing, Forward, Speed);
++      cClientControl::SendPlayState(PlayMode, m_Playing, Forward, Speed);
+    }
+    else
+    {
+       m_Playing = false;
++      cClientControl::SendPlayState(PlayMode, false, false, 0);
+    }
+    return true;
+ }
+ 
+ void cStreamDevice::TrickSpeed(int Speed)
+ {
+-   dsyslog(&quot;[ffnetdev] Device: Trickspeed(not implemented). Speed: %d\n&quot;, Speed);
+-   m_Remux-&gt;ClearInput();
+-   m_Remux-&gt;ClearOutput();
+-   m_Remux-&gt;PlayModeChange();
++   dsyslog(&quot;[ffnetdev] Device: Trickspeed. Speed: %d\n&quot;, Speed);
++   cControl *pControl = cControl::Control();
++   if (pControl)
++   {
++      bool Forward;
++      int Speed;
++      pControl-&gt;GetReplayMode(m_Playing, Forward, Speed);
++      cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed);
++   }
+ }
+ 
+ void cStreamDevice::Clear(void)
+ {
+    dsyslog(&quot;[ffnetdev] Device: Clear(not implemented).\n&quot;);
+-   m_Remux-&gt;ClearInput();
+-   m_Remux-&gt;ClearOutput();
+-   m_Remux-&gt;PlayModeChange();
+ //    cDevice::Clear();
+ }
+ void cStreamDevice::Play(void)
+ {
+-   dsyslog(&quot;[ffnetdev] Device: Play(not implemented).\n&quot;);
++   dsyslog(&quot;[ffnetdev] Device: Play.\n&quot;);
++   
++   cControl *pControl = cControl::Control();
++   if (pControl)
++   {
++      bool Forward;
++      int Speed;
++      pControl-&gt;GetReplayMode(m_Playing, Forward, Speed);
++      cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed);
++   }
++   
+ //    cDevice::Play();
+ }
+ 
+
+Modified: trunk/streamdevice.h
+===================================================================
+--- trunk/streamdevice.h	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/streamdevice.h	2007-01-30 23:30:54 UTC (rev 27)
+@@ -15,40 +15,47 @@
+ 
+ #include &quot;pes2ts.h&quot;
+ 
++enum ePlayState {psBufferReset,psBufferReseted,psPlay};
++
+ class cStreamDevice: public cDevice {
+ private:
+-	  cPESRemux *m_Remux;
+-	  bool       m_Playing;
++   cPESRemux *m_Remux;
++   bool       m_Playing;
++   ePlayState m_PlayState;
++   ePlayMode  m_PlayMode;
++   
+ protected:
+ public:
+-  cStreamDevice(void);
+-  ~cStreamDevice(void);
+-  virtual bool HasDecoder(void) const;
+-  virtual bool CanReplay(void) const;
+-  virtual bool SetPlayMode(ePlayMode PlayMode);
+-  virtual void TrickSpeed(int Speed);
+-  virtual void Clear(void);
+-  virtual void Play(void);
+-  virtual void Freeze(void);
+-  virtual void Mute(void);
+-  virtual void SetVolumeDevice (int Volume);
+-  virtual void StillPicture(const uchar *Data, int Length);
+-  virtual bool Poll(cPoller &amp;Poller, int TimeoutMs = 0);
+-  virtual int PlayVideo(const uchar *Data, int Length);
++   cStreamDevice(void);
++   ~cStreamDevice(void);
++   virtual bool HasDecoder(void) const;
++   virtual bool CanReplay(void) const;
++   virtual bool SetPlayMode(ePlayMode PlayMode);
++   virtual void TrickSpeed(int Speed);
++   virtual void Clear(void);
++   virtual void Play(void);
++   virtual void Freeze(void);
++   virtual void Mute(void);
++   virtual void SetVolumeDevice (int Volume);
++   virtual void StillPicture(const uchar *Data, int Length);
++   virtual bool Poll(cPoller &amp;Poller, int TimeoutMs = 0);
++   virtual int PlayVideo(const uchar *Data, int Length);
+ #if VDRVERSNUM &lt; 10342   
+-  virtual int PlayAudio(const uchar *Data, int Length);
++   virtual int PlayAudio(const uchar *Data, int Length);
+ #else
+-  virtual int PlayAudio(const uchar *Data, int Length, uchar Id);
++   virtual int PlayAudio(const uchar *Data, int Length, uchar Id);
+ #endif  
+-  virtual int ProvidesCa(const cChannel *Channel) const;
+-  virtual void MakePrimaryDevice(bool On);
+-  uchar *Get(int &amp;Count) { return m_Remux-&gt;Get(Count); }
+-  void LockOutput()   { m_Remux-&gt;LockOutput(); }
+-  void UnlockOutput() { m_Remux-&gt;UnlockOutput(); }
+-  void Del(int Count) { m_Remux-&gt;DelOutput(Count); }
+-  void ClearOutput() { m_Remux-&gt;ClearOutput(); }
+-  int Available(void) { return m_Remux-&gt;Available(); }
+-  int Free(void) { return m_Remux-&gt;Free(); }
++   virtual int ProvidesCa(const cChannel *Channel) const;
++   virtual void MakePrimaryDevice(bool On);
++   uchar *Get(int &amp;Count) { return m_Remux-&gt;Get(Count); }
++   void LockOutput()   { m_Remux-&gt;LockOutput(); }
++   void UnlockOutput() { m_Remux-&gt;UnlockOutput(); }
++   void Del(int Count) { m_Remux-&gt;DelOutput(Count); }
++   void ClearOutput() { m_Remux-&gt;ClearOutput(); }
++   int Available(void) { return m_Remux-&gt;Available(); }
++   int Free(void) { return m_Remux-&gt;Free(); }
++   void SetPlayState(ePlayState PlayState) { m_PlayState = PlayState;}
++   ePlayState GetPlayState(void)           { return m_PlayState; }
+ };
+ 
+ #endif
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2007-01-23 23:46:34 UTC (rev 26)
++++ trunk/tsworker.c	2007-01-30 23:30:54 UTC (rev 27)
+@@ -172,18 +172,30 @@
+ 						 m_StreamClient-&gt;RemoteIp().c_str(), m_StreamClient-&gt;RemotePort());
+ 				}
+ 				else
+-					{
++			   {
+ #ifdef DEBUG
+ 					   fprintf(stderr, &quot;[ffnetdev] Streamer: Error closing client socket.\n&quot;);
+ #endif
+ 					   esyslog(&quot;[ffnetdev] Streamer: Error closing connection.&quot;);
+ 					   m_Active=false;
+ 					   continue;
+-					} 
+-					  
++				} 	  
+ 			}
+ 			
+ 			if ( select.CanWrite(*m_StreamClient) ) {
++			   
++			   if (m_StreamDevice-&gt;GetPlayState() == psBufferReset)
++			   {
++			      cCondWait::SleepMs(10);
++			      m_StreamDevice-&gt;SetPlayState(psBufferReseted);
++			   }
++			   
++			   if (m_StreamDevice-&gt;GetPlayState() == psBufferReseted)
++			   {
++			      cCondWait::SleepMs(10);
++			      continue;
++		      }
++			   
+ 				int count=0;
+ 				
+ 				m_StreamDevice-&gt;LockOutput();
+@@ -329,6 +341,7 @@
+ 					  
+ 			}
+ 			
++			
+ 			int count=0;
+ 			
+ 			m_StreamDevice-&gt;LockOutput();
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000011.html">[Ffnetdev-svncheckins] r26 - in trunk: . tools
+</A></li>
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#12">[ date ]</a>
+              <a href="thread.html#12">[ thread ]</a>
+              <a href="subject.html#12">[ subject ]</a>
+              <a href="author.html#12">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

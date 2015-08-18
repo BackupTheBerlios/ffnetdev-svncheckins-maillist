@@ -1,0 +1,112 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r23 - trunk
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2006-June/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r23%20-%20trunk&In-Reply-To=%3C200606102152.k5ALqYgF006389%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r23 - trunk</H1>
+    <B>zwer at berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r23%20-%20trunk&In-Reply-To=%3C200606102152.k5ALqYgF006389%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r23 - trunk">zwer at berlios.de
+       </A><BR>
+    <I>Sat Jun 10 23:52:34 CEST 2006</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8">[ date ]</a>
+              <a href="thread.html#8">[ thread ]</a>
+              <a href="subject.html#8">[ subject ]</a>
+              <a href="author.html#8">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2006-06-10 23:52:17 +0200 (Sat, 10 Jun 2006)
+New Revision: 23
+
+Modified:
+   trunk/osdworker.c
+Log:
+- fixed a Bug
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-05-18 22:31:29 UTC (rev 22)
++++ trunk/osdworker.c	2006-06-10 21:52:17 UTC (rev 23)
+@@ -165,12 +165,15 @@
+     memset(&amp;(m_Instance-&gt;m_lasttime), 0, sizeof(m_Instance-&gt;m_lasttime));
+ 	
+     m_Instance-&gt;m_pOsdBitmap-&gt;Colors(iOldNumColors);
+-    m_Instance-&gt;m_pOsdBitmap-&gt;DrawRectangle(0, 0, 720, 576, clrTransparent);
++    m_Instance-&gt;m_pOsdBitmap-&gt;DrawRectangle(0, 0, 720-1, 576-1, clrTransparent);
+     m_Instance-&gt;m_pOsdBitmap-&gt;Colors(iNumColors);
+     if (iNumColors != iOldNumColors)
+         m_Instance-&gt;m_bColorsChanged = true;
+ 	    
+-    m_Instance-&gt;SendScreen(0, 0, 720, 576);
++    if (m_Instance-&gt;m_bColorsChanged)
++	m_Instance-&gt;SendScreen(0, 0, 720-1, 576-1);
++    else
++	m_Instance-&gt;SendScreen();
+ 
+     if (m_Instance-&gt;ClientFormat.trueColour)
+     {
+@@ -211,9 +214,9 @@
+    if ((m_Instance-&gt;state==HANDSHAKE_OK) &amp;&amp; (m_Instance-&gt;m_pEncoder != NULL) &amp;&amp;
+        (x1 || x2 || y1 || y2 || (m_Instance-&gt;m_pOsdBitmap-&gt;Dirty(x1, y1, x2, y2))))
+    {	    
+-	dsyslog(&quot;[ffnetdev] VNC: Rect x/y/w/h %d/%d/%d/%d\n&quot;, x1, y1, x2-x1, y2-y1);
++	dsyslog(&quot;[ffnetdev] VNC: Rect x/y/w/h %d/%d/%d/%d\n&quot;, x1, y1, x2-x1+1, y2-y1+1);
+ 	
+-	if ((x2-x1) * (y2-y1) == 0)
++	if ((x2-x1+1) * (y2-y1+1) == 0)
+ 	{
+ 	    dsyslog(&quot;[ffnetdev] VNC: zero size rect - ignoring\n&quot;);
+ 	    
+@@ -548,8 +551,8 @@
+ 						else
+ 						{
+ 						    SendScreen(	Swap16IfLE(msg.fur.x), Swap16IfLE(msg.fur.y),
+-						    		Swap16IfLE(msg.fur.x + msg.fur.w), 
+-								Swap16IfLE(msg.fur.y + msg.fur.h));
++						    		Swap16IfLE(msg.fur.x + msg.fur.w - 1), 
++								Swap16IfLE(msg.fur.y + msg.fur.h - 1));
+ 						}
+ 						
+ 						break;
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#8">[ date ]</a>
+              <a href="thread.html#8">[ thread ]</a>
+              <a href="subject.html#8">[ subject ]</a>
+              <a href="author.html#8">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

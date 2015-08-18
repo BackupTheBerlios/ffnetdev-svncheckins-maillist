@@ -1,0 +1,207 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r35 - trunk
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2008-November/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r35%20-%20trunk&In-Reply-To=%3C200811021827.mA2IRMgP022941%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r35 - trunk</H1>
+    <B>zwer at mail.berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r35%20-%20trunk&In-Reply-To=%3C200811021827.mA2IRMgP022941%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r35 - trunk">zwer at mail.berlios.de
+       </A><BR>
+    <I>Sun Nov  2 19:27:22 CET 2008</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#20">[ date ]</a>
+              <a href="thread.html#20">[ thread ]</a>
+              <a href="subject.html#20">[ subject ]</a>
+              <a href="author.html#20">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2008-11-02 19:27:05 +0100 (Sun, 02 Nov 2008)
+New Revision: 35
+
+Modified:
+   trunk/ffnetdev.c
+   trunk/ffnetdev.h
+   trunk/remote.c
+   trunk/rfb.h
+   trunk/tsworker.h
+   trunk/vncEncoder.h
+Log:
+- Lauff?\195?\164hig auf 64 Bit Systemen gemacht
+- Beim Aunlernen von Tasten sollte es keine Abst?\195?\188rze mehr geben
+
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2008-09-04 20:16:47 UTC (rev 34)
++++ trunk/ffnetdev.c	2008-11-02 18:27:05 UTC (rev 35)
+@@ -15,7 +15,6 @@
+ #include &quot;netosd.h&quot;
+ #include &quot;ffnetdev.h&quot;
+ #include &quot;streamdevice.h&quot;
+-#include &quot;remote.h&quot;
+ #include &quot;osdworker.h&quot;
+ #include &quot;clientcontrol.h&quot;
+ #include &quot;config.h&quot;
+@@ -62,6 +61,7 @@
+   EnableRemote = false;
+   m_origPrimaryDevice = -1;
+   m_Remote = NULL;
++  m_LearningThread = NULL;
+   
+   config.iAutoSetPrimaryDVB = 0;
+ }
+@@ -252,9 +252,11 @@
+          
+          m_Remote = new cMyRemote(str);
+       }
+-   
++
+       if (!cRemote::HasKeys())
+-         new cLearningThread();
++      {
++         m_LearningThread = new cLearningThread();
++      }
+       dsyslog(&quot;[ffnetdev] remote control enabled.\n&quot;);
+    }
+    else 
+@@ -286,6 +288,12 @@
+       Remotes.Del(m_Remote);
+       m_Remote = NULL;
+    }
++   
++   if (m_LearningThread)
++   {
++      delete m_LearningThread;
++      m_LearningThread = NULL;
++   }
+ }
+ 
+ void cPluginFFNetDev::SetClientName(char* ClientName)
+
+Modified: trunk/ffnetdev.h
+===================================================================
+--- trunk/ffnetdev.h	2008-09-04 20:16:47 UTC (rev 34)
++++ trunk/ffnetdev.h	2008-11-02 18:27:05 UTC (rev 35)
+@@ -28,6 +28,7 @@
+ 	bool EnableRemote;
+ 	int  m_origPrimaryDevice;	
+ 	char m_ClientName[20];
++	cLearningThread *m_LearningThread;
+ 	
+ public:
+   cPluginFFNetDev(void);
+
+Modified: trunk/remote.c
+===================================================================
+--- trunk/remote.c	2008-09-04 20:16:47 UTC (rev 34)
++++ trunk/remote.c	2008-11-02 18:27:05 UTC (rev 35)
+@@ -62,12 +62,11 @@
+     {	
+ 	dsyslog(&quot;[ffnetdev] ClientIsReady=%d OsdIsOpen=%d SkinsIsOpen=%d&quot;, 
+ 	    cOSDWorker::ClientIsReady(), cOsd::IsOpen(), Skins.IsOpen());
+-	delete this;
+ 	return;
+     }
+-
++#ifdef DEBUG
++    fprintf(stderr, &quot;[ffnetdev] start learning keys&quot;);
++#endif
+     dsyslog(&quot;[ffnetdev] start learning keys&quot;);
+     Interface-&gt;LearnKeys();
+-    
+-    delete this;
+ }
+
+Modified: trunk/rfb.h
+===================================================================
+--- trunk/rfb.h	2008-09-04 20:16:47 UTC (rev 34)
++++ trunk/rfb.h	2008-11-02 18:27:05 UTC (rev 35)
+@@ -33,9 +33,10 @@
+ #define RFB_H__
+ 
+ // Define the CARD* types
+-typedef unsigned long  CARD32;
+-typedef unsigned short CARD16;
++typedef unsigned int  CARD32;
++typedef unsigned short int CARD16;
+ typedef unsigned char  CARD8;
++    
+ 
+ // Define the port number offsets
+ #define FLASH_PORT_OFFSET 5400
+
+Modified: trunk/tsworker.h
+===================================================================
+--- trunk/tsworker.h	2008-09-04 20:16:47 UTC (rev 34)
++++ trunk/tsworker.h	2008-11-02 18:27:05 UTC (rev 35)
+@@ -16,7 +16,11 @@
+ #include &quot;netosd.h&quot;
+ #include &quot;ffnetdev.h&quot;
+ 
++#ifdef _LP64
++typedef unsigned long u64;
++#else
+ typedef unsigned long long u64;
++#endif
+ 
+ #define TCP_SEND_SIZE (1024 * 20)
+ 
+
+Modified: trunk/vncEncoder.h
+===================================================================
+--- trunk/vncEncoder.h	2008-09-04 20:16:47 UTC (rev 34)
++++ trunk/vncEncoder.h	2008-11-02 18:27:05 UTC (rev 35)
+@@ -39,7 +39,11 @@
+ 
+ typedef unsigned char  BYTE;
+ typedef unsigned int   UINT;
++#ifdef _LP64
++typedef unsigned int  DWORD;
++#else
+ typedef unsigned long  DWORD;
++#endif
+ 
+ //static
+ 
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#20">[ date ]</a>
+              <a href="thread.html#20">[ thread ]</a>
+              <a href="subject.html#20">[ subject ]</a>
+              <a href="author.html#20">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

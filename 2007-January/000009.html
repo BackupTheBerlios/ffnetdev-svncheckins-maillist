@@ -1,0 +1,676 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r24 - in trunk: . tools
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2007-January/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r24%20-%20in%20trunk%3A%20.%20tools&In-Reply-To=%3C200701062204.l06M479O018198%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   <LINK REL="Next"  HREF="000010.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r24 - in trunk: . tools</H1>
+    <B>zwer at mail.berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r24%20-%20in%20trunk%3A%20.%20tools&In-Reply-To=%3C200701062204.l06M479O018198%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r24 - in trunk: . tools">zwer at mail.berlios.de
+       </A><BR>
+    <I>Sat Jan  6 23:04:07 CET 2007</I>
+    <P><UL>
+        
+        <LI>Next message: <A HREF="000010.html">[Ffnetdev-svncheckins] r25 - in trunk: . tools
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9">[ date ]</a>
+              <a href="thread.html#9">[ thread ]</a>
+              <a href="subject.html#9">[ subject ]</a>
+              <a href="author.html#9">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2007-01-06 23:04:00 +0100 (Sat, 06 Jan 2007)
+New Revision: 24
+
+Modified:
+   trunk/netosd.c
+   trunk/osdworker.c
+   trunk/tools/socket.c
+   trunk/tools/socket.h
+   trunk/tsworker.c
+   trunk/tsworker.h
+   trunk/vncEncodeCoRRE.c
+   trunk/vncEncodeHexT.c
+   trunk/vncEncodeRRE.c
+   trunk/vncEncoder.c
+Log:
+- tests mit UDP-Streaming
+
+Modified: trunk/netosd.c
+===================================================================
+--- trunk/netosd.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/netosd.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -59,9 +59,9 @@
+        if (Bitmap-&gt;Dirty(x1, y1, x2, y2))   
+        {  
+ #ifdef DEBUG         
+-	        fprintf(stderr, &quot;[ffnetdev] NetOSD: Left: %d, Top: %d, X0: %d, Y0: %d, Width: %d, Height: %d\n&quot;, 
+-               			 Left(), Top(), Bitmap-&gt;X0(), Bitmap-&gt;Y0(), Bitmap-&gt;Width(), Bitmap-&gt;Height()); 
+-       		fprintf(stderr, &quot;[ffnetdev] NetOSD: Dirty area x1: %d, y1: %d, x2: %d, y2: %d\n&quot;,x1,y1,x2,y2);
++	        //fprintf(stderr, &quot;[ffnetdev] NetOSD: Left: %d, Top: %d, X0: %d, Y0: %d, Width: %d, Height: %d\n&quot;, 
++               	//		 Left(), Top(), Bitmap-&gt;X0(), Bitmap-&gt;Y0(), Bitmap-&gt;Width(), Bitmap-&gt;Height()); 
++       		//fprintf(stderr, &quot;[ffnetdev] NetOSD: Dirty area x1: %d, y1: %d, x2: %d, y2: %d\n&quot;,x1,y1,x2,y2);
+ #endif
+ 		cOSDWorker::DrawBitmap(Left() + Bitmap-&gt;X0(), Top() + Bitmap-&gt;Y0(), *Bitmap);
+        		
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/osdworker.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -253,15 +253,18 @@
+    	OSDWrite((unsigned char*)&amp;fu, sz_rfbFramebufferUpdateMsg);
+ 	//int BufferSize = m_Instance-&gt;m_pEncoder-&gt;RequiredBuffSize(x2-x1, y2-y1);
+ 	//m_Instance-&gt;CreateSendBuffer(BufferSize);
+-	int BufferSize = m_Instance-&gt;m_pEncoder-&gt;EncodeRect((BYTE*)(m_Instance-&gt;m_pOsdBitmap-&gt;Data(0, 0)), m_Instance-&gt;m_pSendBuffer, rect);
++	if (m_Instance-&gt;m_pEncoder != NULL)
++	{
++	    int BufferSize = m_Instance-&gt;m_pEncoder-&gt;EncodeRect((BYTE*)(m_Instance-&gt;m_pOsdBitmap-&gt;Data(0, 0)), m_Instance-&gt;m_pSendBuffer, rect);
+ #ifdef DEBUG
+-	fprintf(stderr, &quot;[ffnetdev] VNC: Send OSD Data %d Bytes\n&quot;, BufferSize);
++	    fprintf(stderr, &quot;[ffnetdev] VNC: Send OSD Data %d/%d/%d/%d x1/y1/x2/y2 %d Bytes\n&quot;, x1, y1, x2, y2, BufferSize);
+ #endif
+-	dsyslog(&quot;[ffnetdev] VNC: Send OSD Data %d Bytes\n&quot;, BufferSize);
+-       	OSDWrite((unsigned char*)m_Instance-&gt;m_pSendBuffer, BufferSize);
+-	m_Instance-&gt;m_pOsdBitmap-&gt;Clean();
++	    dsyslog(&quot;[ffnetdev] VNC: Send OSD Data %d/%d/%d/%d x1/y1/x2/y2 %d Bytes\n&quot;, x1, y1, x2, y2, BufferSize);
++       	    OSDWrite((unsigned char*)m_Instance-&gt;m_pSendBuffer, BufferSize);
++	    m_Instance-&gt;m_pOsdBitmap-&gt;Clean();
+ 	
+-	m_Instance-&gt;m_bOSDisClear = false;
++	    m_Instance-&gt;m_bOSDisClear = false;
++	}
+ 	
+    	return true;
+    }
+
+Modified: trunk/tools/socket.c
+===================================================================
+--- trunk/tools/socket.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/tools/socket.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -1,11 +1,15 @@
+ #include &quot;tools/socket.h&quot;
+ 
++#include &lt;vdr/tools.h&gt;
++
+ #include &lt;string.h&gt;
+ #include &lt;arpa/inet.h&gt;
+ #include &lt;unistd.h&gt;
+ #include &lt;errno.h&gt;
+ #include &lt;fcntl.h&gt;
+ 
++#define UDP_TX_BUF_SIZE ((188*7+3)*20)
++
+ cTBSocket::cTBSocket(int Type) {
+ 	memset(&amp;m_LocalAddr, 0, sizeof(m_LocalAddr));
+ 	memset(&amp;m_RemoteAddr, 0, sizeof(m_RemoteAddr));
+@@ -16,6 +20,46 @@
+ 	if (IsOpen()) Close();
+ }
+ 
++bool cTBSocket::OpenUDP(const std::string &amp;Host, unsigned int Port) {
++	int socket, tmp;
++	struct sockaddr_in my_addr;
++
++	if (IsOpen()) Close();
++	
++	if ((socket = ::socket(AF_INET, m_Type, 0)) == -1)
++		return false;
++		
++	m_RemoteAddr.sin_family = AF_INET;
++	m_RemoteAddr.sin_port   = htons(Port);
++	m_RemoteAddr.sin_addr.s_addr = inet_addr(Host.c_str());
++	
++	my_addr.sin_family = AF_INET;
++	my_addr.sin_port = htons(Port);
++	my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
++		    
++/*	tmp = 1;
++	if (setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, (char*)&amp;tmp, sizeof(tmp)) &lt; 0)
++	    goto closefd;*/
++		    
++	/* limit the tx buf size to limit latency */
++	tmp = UDP_TX_BUF_SIZE;
++	if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char*)&amp;tmp, sizeof(tmp)) &lt; 0)
++	    goto closefd;
++
++	/* the bind is needed to give a port to the socket now */
++/*	if (bind(socket,(struct sockaddr *)&amp;my_addr, sizeof(my_addr)) &lt; 0) 
++	    goto closefd;*/
++
++	if (!cTBSource::Open(socket))
++	    goto closefd; // return false;
++
++	return true;
++
++closefd:
++    ::close(socket);
++    return false;
++}
++
+ bool cTBSocket::Connect(const std::string &amp;Host, unsigned int Port) {
+ 	socklen_t len;
+ 	int socket;
+
+Modified: trunk/tools/socket.h
+===================================================================
+--- trunk/tools/socket.h	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/tools/socket.h	2007-01-06 22:04:00 UTC (rev 24)
+@@ -44,6 +44,11 @@
+ 	   otherwise, setting errno appropriately. */
+ 	virtual bool Shutdown(int How);
+ 
++	/* OpenUDP() Open the associated socket. 
++	   Returns true on success and false otherwise, setting errno 
++	   appropriately. */
++	virtual bool OpenUDP(const std::string &amp;Ip, uint Port);
++	
+ 	/* Close() closes the associated socket and releases all structures. 
+ 	   Returns true on success and false otherwise, setting errno 
+ 	   appropriately. The object is in the closed state afterwards, regardless
+@@ -102,7 +107,11 @@
+ }
+ 
+ inline ssize_t cTBSocket::SysWrite(const void *Buffer, size_t Length) const {
+-	return ::send(*this, Buffer, Length, 0);
++	if ((m_Type == SOCK_DGRAM)) {
++		socklen_t len = sizeof(m_RemoteAddr);
++		return ::sendto(*this, Buffer, Length, 0, (sockaddr*)&amp;m_RemoteAddr, len);
++	} else
++		return ::send(*this, Buffer, Length, 0);
+ }
+ 
+ #endif // TOOLBOX_SOCKET_H
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/tsworker.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -15,8 +15,19 @@
+ #include &quot;tsworker.h&quot;
+ #include &quot;config.h&quot;
+ 
+-#define MINSENDBYTES KILOBYTE(500)
++#define TS_PACKET_SIZE (188)
++#define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
++#define UDP_MAX_BITRATE 7000000
++#define UDP_SEND_INTERVALL 1000
+ 
++struct TSData
++{
++	char packNr;
++    char packsCount;
++    char tsHeaderCRC;
++    char data[UDP_PACKET_SIZE];
++};
++
+ //////////////////////////////////////////////////////////////////////////////////////////////////
+ //////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+@@ -25,7 +36,7 @@
+ cTSWorker::cTSWorker(void)
+ 		: cThread(&quot;[ffnetdev] TS streamer&quot;)
+ {
+-	m_Active = false;
++	m_Active = false;	
+ 	
+ 	m_StreamClient = NULL;
+ 	origPrimaryDevice = -1;
+@@ -42,6 +53,7 @@
+ 		m_Instance-&gt;TSPort = tsport;		
+ 		m_Instance-&gt;Start();
+ 		m_Instance-&gt;m_pPlugin = pPlugin;
++		m_Instance-&gt;close_Streamclient_request = false;
+ 	}
+ }
+ 
+@@ -65,8 +77,13 @@
+ }
+ 
+ void cTSWorker::Action(void) {
++    ActionTCP();
++    //ActionUDP();
++}
++
++
++void cTSWorker::ActionTCP(void) {
+ 	cTBSelect select;
+-	//cTBSocket m_StreamListen(SOCK_DGRAM);
+ 	cTBSocket m_StreamListen;
+ 	struct timeval oldtime;
+ 	long bytessend = 0;
+@@ -181,18 +198,17 @@
+ 					    if (((written=m_StreamClient-&gt;Write(&amp;buffer[done], available)) &lt; 0) &amp;&amp; 
+ 						(errno != EAGAIN)) 
+ 					    {
+-						CloseStreamClient();
++							CloseStreamClient();
+ 					    }
+ 					    
+ 					    if (written &gt; 0)
+ 					    {
+-						
+-						available -= written;
+-						done      += written;
++							available -= written;
++							done      += written;
+ 					    }
+ 					    else
+ 					    {
+-						cCondWait::SleepMs(5);
++							cCondWait::SleepMs(5);
+ 					    }
+ 					}
+ 					m_StreamDevice-&gt;Del(count);
+@@ -209,17 +225,18 @@
+ 					bytessend += count;
+ 					if (curtime.tv_sec &gt; oldtime.tv_sec + 10)
+ 					{
+-					    double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
++						double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
+ 							- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
++						double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
+ #ifdef DEBUG
+-					    fprintf(stderr, &quot;[ffnetdev] Streamer: current TransferRate %d Byte/Sec, %d Bytes send\n&quot;,
+-						(int)((bytessend - oldbytessend) / secs), bytessend - oldbytessend);
++						fprintf(stderr, &quot;[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n&quot;,
++							rate, bytessend - oldbytessend);
+ #endif						
+-					    dsyslog(&quot;[ffnetdev] Streamer: current TransferRate %d Byte/Sec, %d Bytes send\n&quot;,
+-						(int)((bytessend - oldbytessend) / secs), bytessend - oldbytessend);
+-					    
+-					    oldbytessend = bytessend;
+-					    oldtime = curtime;
++						dsyslog(&quot;[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n&quot;,
++							rate, bytessend - oldbytessend);
++						
++						oldbytessend = bytessend;
++						oldtime = curtime;
+ 					}
+ 				}
+ 				m_StreamDevice-&gt;UnlockOutput();
+@@ -246,3 +263,219 @@
+ 
+ }
+ 
++
++void cTSWorker::ActionUDP(void) 
++{
++	cTBSocket m_StreamClient(SOCK_DGRAM);
++	struct timeval oldtime, curtime;
++	u64 oldPacketTime = 0;
++	long bytessend = 0;
++	long oldbytessend = 0;
++	long toSend = 0;
++	int restData = 0;
++	TSData tsData;
++
++	const char* StreamIp = &quot;192.168.0.61&quot;;
++	uint StreamPort = TSPort;
++
++	m_Active		= true;
++	have_Streamclient	= true;
++	
++	if (!m_StreamClient.OpenUDP(StreamIp, StreamPort)) 
++	{
++		isyslog(&quot;[ffnetdev] Streamer: Couldn't create UDP-Socket: %s&quot;, strerror(errno));
++		m_Active = false;
++	} 
++	else
++	    isyslog(&quot;[ffnetdev] Streamer: UDP-Socket create successful&quot;);
++
++	gettimeofday(&amp;oldtime, 0);
++	tsData.packNr = 0;
++	tsData.packsCount = 0;
++	tsData.tsHeaderCRC = 0;
++
++	while (m_Active) 
++	{
++		/* Check for closed streaming client connection */		
++		if (have_Streamclient==true) 
++		{ 
++			if (close_Streamclient_request==true) 
++			{
++				close_Streamclient_request = false;
++				have_Streamclient = false;
++				
++				m_pPlugin-&gt;RestorePrimaryDevice();
++				
++				if ( m_StreamClient.Close() ) 
++				{
++#ifdef DEBUG
++					fprintf(stderr, &quot;[ffnetdev] Streamer: Client socket closed successfully.\n&quot;);
++#endif
++					isyslog(&quot;[ffnetdev] Streamer: Connection closed: client %s:%d&quot;,
++						 m_StreamClient.RemoteIp().c_str(), m_StreamClient.RemotePort());
++				}
++				else
++				{
++#ifdef DEBUG
++					fprintf(stderr, &quot;[ffnetdev] Streamer: Error closing client socket.\n&quot;);
++#endif
++					esyslog(&quot;[ffnetdev] Streamer: Error closing connection.&quot;);
++					m_Active=false;
++					continue;
++				} 
++					  
++			}
++			
++			int count=0;
++			
++			m_StreamDevice-&gt;LockOutput();
++			uchar *buffer = m_StreamDevice-&gt;Get(count);
++			if (buffer!=NULL) 
++			{	
++				int available = count;
++				int done      = 0;
++				int written   = 0;
++				char data[100];
++				int  rcvCount;
++
++				rcvCount=m_StreamClient.Read(data, 10);
++				if (rcvCount &gt; 0)
++				{
++					isyslog(&quot;[ffnetdev] Streamer: empfangen:%d Bytes\n&quot;, rcvCount);
++				}
++
++				if (oldPacketTime == 0)
++					oldPacketTime = get_time()- UDP_SEND_INTERVALL;
++
++				while ((available &gt; 0) &amp;&amp; (have_Streamclient == true) &amp;&amp;
++					   (!close_Streamclient_request))
++				{
++					while ((tsData.packsCount * TS_PACKET_SIZE &lt; UDP_PACKET_SIZE) &amp;&amp; (available &gt; 0))
++					{
++						int moveCount = (available &gt;= TS_PACKET_SIZE) ?  TS_PACKET_SIZE : available;
++						moveCount = (moveCount + restData &gt;= TS_PACKET_SIZE) ?  TS_PACKET_SIZE - restData : moveCount;
++						memcpy(&amp;tsData.data[(tsData.packsCount * TS_PACKET_SIZE) + restData], &amp;buffer[done], moveCount);
++						available -= moveCount;
++						done += moveCount;
++						if (restData + moveCount == TS_PACKET_SIZE)
++						{
++							char *data = &amp;tsData.data[tsData.packsCount * TS_PACKET_SIZE];
++							for (int i = 0; i &lt; 4; i++)
++							{	
++								tsData.tsHeaderCRC += (char)*(data + i);
++							}
++							restData = 0;
++							tsData.packsCount ++;
++						}
++						else
++						{
++							restData = moveCount;
++							continue;
++						}
++					}
++
++					if (restData &gt; 0)
++						continue;
++
++					while (get_time() &lt; oldPacketTime + UDP_SEND_INTERVALL)
++						cCondWait::SleepMs(1);
++
++					if (toSend == 0)
++						toSend = (long)(UDP_MAX_BITRATE * (((double)get_time() - oldPacketTime) / 1000000) / 8);
++					
++					int sendcount = tsData.packsCount * TS_PACKET_SIZE + 3;
++					if (toSend &lt; sendcount)
++					{
++						toSend = 0;
++						oldPacketTime = get_time();
++						continue;
++					}
++
++					char* pTsData = (char*)&tsData;
++					while ((sendcount &gt; 0) &amp;&amp; (have_Streamclient == true) &amp;&amp;
++					   (!close_Streamclient_request))
++					{
++						if (((written=m_StreamClient.Write(pTsData, sendcount)) &lt; 0) &amp;&amp; 
++							(errno != EAGAIN)) 
++						{
++							isyslog(&quot;[ffnetdev] Streamer: Couldn't send data: %d %s Len:%d\n&quot;, errno, strerror(errno), sendcount);
++							CloseStreamClient();
++						}
++						
++						if (written &gt; 0)
++						{
++							sendcount -= written;
++							pTsData   += written;
++							toSend	  -= written;
++						}
++						else
++						{
++							cCondWait::SleepMs(5);
++						}
++					}
++
++					if (sendcount == 0)
++					{
++						tsData.packsCount = 0;
++						tsData.tsHeaderCRC = 0;
++						tsData.packNr ++;
++					}
++				}
++				m_StreamDevice-&gt;Del(count);
++
++				gettimeofday(&amp;curtime, 0);
++				if (oldtime.tv_sec == 0)
++				{
++					oldtime = curtime;
++					bytessend    = 0;
++					oldbytessend = 0;
++				}
++					
++				bytessend += count;
++				if (curtime.tv_sec &gt; oldtime.tv_sec + 10)
++				{
++					double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
++						- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
++					double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
++#ifdef DEBUG
++					fprintf(stderr, &quot;[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n&quot;,
++						rate, bytessend - oldbytessend);
++#endif						
++					dsyslog(&quot;[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n&quot;,
++						rate, bytessend - oldbytessend);
++					
++					oldbytessend = bytessend;
++					oldtime = curtime;
++				}
++			}
++			m_StreamDevice-&gt;UnlockOutput();
++
++		} 
++		else 
++		{  
++			/* simply discard all data in ringbuffer */
++			int count=0;
++			if ( (m_StreamDevice-&gt;Get(count)) !=NULL ) 
++			{
++				m_StreamDevice-&gt;Del(count);
++#ifdef DEBUG
++				fprintf (stderr, &quot;[ffnetdev] Streamer: Bytes not sent, but deleted from ringbuffer: %d\n&quot;,count);
++#endif
++				dsyslog(&quot;[ffnetdev] Streamer: Bytes not sent, but deleted from ringbuffer: %d\n&quot;,count);
++			}
++		}
++		cCondWait::SleepMs(3);
++
++	} // while(m_Active)
++
++}
++
++/* Returns time since 1970 in microseconds */
++u64 cTSWorker::get_time(void)
++{
++	struct timeval tv;
++	struct timezone tz={0,0};
++
++	gettimeofday(&amp;tv,&amp;tz);
++	return ((u64)tv.tv_sec)*1000000+((u64)tv.tv_usec);
++}
+
+Modified: trunk/tsworker.h
+===================================================================
+--- trunk/tsworker.h	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/tsworker.h	2007-01-06 22:04:00 UTC (rev 24)
+@@ -16,7 +16,9 @@
+ #include &quot;netosd.h&quot;
+ #include &quot;ffnetdev.h&quot;
+ 
++typedef unsigned long long u64;
+ 
++
+ // --- cTSWorker -------------------------------------------------------------
+ 
+ class cTSWorker : public cThread {
+@@ -30,9 +32,12 @@
+ 	int TSPort;
+ 	int origPrimaryDevice;
+ 	cPluginFFNetDev *m_pPlugin;	
++	u64 get_time(void);
+ 
+ protected:
+ 	virtual void Action(void);
++	virtual void ActionTCP(void);
++	virtual void ActionUDP(void);
+ 	void Stop(void);
+ public:
+ 	cTSWorker(void);
+
+Modified: trunk/vncEncodeCoRRE.c
+===================================================================
+--- trunk/vncEncodeCoRRE.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/vncEncodeCoRRE.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -203,8 +203,8 @@
+ 	// Do the encoding
+ 	UINT size = InternalEncodeRect(source, dest, rect);
+ 
+-	const int rectW = rect.right - rect.left;
+-	const int rectH = rect.bottom - rect.top;
++	const int rectW = rect.right - rect.left + 1;
++	const int rectH = rect.bottom - rect.top + 1;
+ 
+ 	// Will this rectangle have been split for encoding?
+ 	if ((rectW&gt;m_maxwidth) || (rectH&gt;m_maxheight))
+@@ -286,8 +286,8 @@
+ {
+ 	int subrects = -1;
+ 
+-	const UINT rectW = rect.right - rect.left;
+-	const UINT rectH = rect.bottom - rect.top;
++	const UINT rectW = rect.right - rect.left + 1;
++	const UINT rectH = rect.bottom - rect.top + 1;
+ 
+ 	// Create the rectangle header
+ 	rfbFramebufferUpdateRectHeader *surh=(rfbFramebufferUpdateRectHeader *)dest;
+
+Modified: trunk/vncEncodeHexT.c
+===================================================================
+--- trunk/vncEncodeHexT.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/vncEncodeHexT.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -81,8 +81,8 @@
+ UINT
+ vncEncodeHexT::EncodeRect(BYTE *source, BYTE *dest, const RECT &amp;rect)
+ {
+-	const UINT rectW = rect.right - rect.left;
+-	const UINT rectH = rect.bottom - rect.top;
++	const UINT rectW = rect.right - rect.left + 1;
++	const UINT rectH = rect.bottom - rect.top + 1;
+ 	int encodedResult;
+ 
+ 	// Create the rectangle header
+@@ -176,8 +176,8 @@
+ 			RECT hexrect;													\
+ 			hexrect.left = x;												\
+ 			hexrect.top = y;												\
+-			hexrect.right = x+w;											\
+-			hexrect.bottom = y+h;											\
++			hexrect.right = x+w-1;											\
++			hexrect.bottom = y+h-1;											\
+ 			Translate(source, (BYTE *) &amp;clientPixelData, hexrect);			\
+ 																			\
+ 			rectoffset = destoffset;										\
+
+Modified: trunk/vncEncodeRRE.c
+===================================================================
+--- trunk/vncEncodeRRE.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/vncEncodeRRE.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -258,8 +258,8 @@
+ {
+ 	int subrects = -1;
+ 
+-	const UINT rectW = rect.right - rect.left;
+-	const UINT rectH = rect.bottom - rect.top;
++	const UINT rectW = rect.right - rect.left + 1;
++	const UINT rectH = rect.bottom - rect.top + 1;
+ 
+ 	// Create the rectangle header
+ 	rfbFramebufferUpdateRectHeader *surh=(rfbFramebufferUpdateRectHeader *)dest;
+
+Modified: trunk/vncEncoder.c
+===================================================================
+--- trunk/vncEncoder.c	2006-06-10 21:52:17 UTC (rev 23)
++++ trunk/vncEncoder.c	2007-01-06 22:04:00 UTC (rev 24)
+@@ -121,8 +121,8 @@
+ 					(char *)sourcepos,
+ 					(char *)dest,
+ 					m_bytesPerRow,
+-					rect.right-rect.left,
+-					rect.bottom-rect.top
++					rect.right-rect.left+1,
++					rect.bottom-rect.top+1
+ 					);
+ }
+ 
+@@ -142,8 +142,8 @@
+ vncEncoder::EncodeRect(BYTE *source, BYTE *dest, const RECT &amp;rect)
+ {
+ 
+-	const int rectW = rect.right - rect.left;
+-	const int rectH = rect.bottom - rect.top;
++	const int rectW = rect.right - rect.left + 1;
++	const int rectH = rect.bottom - rect.top + 1;
+ 
+ 
+ 	// Create the header for the update in the destination area
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	<LI>Next message: <A HREF="000010.html">[Ffnetdev-svncheckins] r25 - in trunk: . tools
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#9">[ date ]</a>
+              <a href="thread.html#9">[ thread ]</a>
+              <a href="subject.html#9">[ subject ]</a>
+              <a href="author.html#9">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

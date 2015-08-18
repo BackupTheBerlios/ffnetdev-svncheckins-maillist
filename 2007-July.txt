@@ -1,0 +1,109 @@
+From zwer at mail.berlios.de  Mon Jul  2 00:15:58 2007
+From: zwer at mail.berlios.de (zwer at mail.berlios.de)
+Date: Mon, 2 Jul 2007 00:15:58 +0200
+Subject: [Ffnetdev-svncheckins] r31 - trunk
+Message-ID: <200707012215.l61MFwQ6014966@sheep.berlios.de>
+
+Author: zwer
+Date: 2007-07-02 00:15:56 +0200 (Mon, 02 Jul 2007)
+New Revision: 31
+
+Modified:
+   trunk/clientcontrol.c
+   trunk/osdworker.c
+   trunk/pes2ts.c
+Log:
+- sporadischen Fehler in VNC-Protokoll behoben
+
+
+Modified: trunk/clientcontrol.c
+===================================================================
+--- trunk/clientcontrol.c	2007-03-29 13:32:23 UTC (rev 30)
++++ trunk/clientcontrol.c	2007-07-01 22:15:56 UTC (rev 31)
+@@ -202,7 +202,7 @@
+    SClientControl data;
+    SClientControlPlayState state;
+        
+-   if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL))
++   if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL) || (!m_Instance->m_bHaveClient))
+       return false;
+ 
+    m_Instance->m_bPlayStateReq = false;
+@@ -232,7 +232,7 @@
+    SClientControl data;
+    int written, available, done;
+   
+-   if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL))
++   if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL) || (!m_Instance->m_bHaveClient))
+       return false;
+   
+    data.pakType = ptStillPicture;
+@@ -274,7 +274,7 @@
+    SClientControl data;
+    int written, available, done;
+   
+-   if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL))
++   if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL) || (!m_Instance->m_bHaveClient))
+       return false;
+   
+    data.pakType = ptFreeze;
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2007-03-29 13:32:23 UTC (rev 30)
++++ trunk/osdworker.c	2007-07-01 22:15:56 UTC (rev 31)
+@@ -223,7 +223,7 @@
+ 	    return false;
+ 	}
+    
+-	rfbFramebufferUpdateMsg fu;
++	
+ 	struct timeval curtime;
+ 	gettimeofday(&curtime, 0);
+ 	curtime.tv_sec = curtime.tv_sec - (((int)curtime.tv_sec / 1000000) * 1000000);
+@@ -246,16 +246,20 @@
+ 	    const tColor *OSDColors = (tColor*)m_Instance->m_pOsdBitmap->Colors(numOSDColors);
+ 	    cOSDWorker::SendCMAP(numOSDColors, OSDColors);
+ 	}
++		
++	int BufferSize = m_Instance->m_pEncoder->RequiredBuffSize(x2-x1+1, y2-y1+1) + sizeof(rfbFramebufferUpdateMsg);
++	m_Instance->CreateSendBuffer(BufferSize);
+ 	
++	rfbFramebufferUpdateMsg *fu = (rfbFramebufferUpdateMsg*)m_Instance->m_pSendBuffer;
+ 	RECT rect = {x1, y1, x2, y2};
+-   	fu.type=rfbFramebufferUpdate;
+-   	fu.nRects=Swap16IfLE(1);
+-   	OSDWrite((unsigned char*)&fu, sz_rfbFramebufferUpdateMsg);
+-	//int BufferSize = m_Instance->m_pEncoder->RequiredBuffSize(x2-x1, y2-y1);
+-	//m_Instance->CreateSendBuffer(BufferSize);
++   	fu->type=rfbFramebufferUpdate;
++	fu->pad=0;
++   	fu->nRects=Swap16IfLE(1);
++	
+ 	if (m_Instance->m_pEncoder != NULL)
+ 	{
+-	    int BufferSize = m_Instance->m_pEncoder->EncodeRect((BYTE*)(m_Instance->m_pOsdBitmap->Data(0, 0)), m_Instance->m_pSendBuffer, rect);
++	    BufferSize = m_Instance->m_pEncoder->EncodeRect((BYTE*)(m_Instance->m_pOsdBitmap->Data(0, 0)), &(m_Instance->m_pSendBuffer[sizeof(rfbFramebufferUpdateMsg)]), rect); 
++	    BufferSize += sizeof(rfbFramebufferUpdateMsg);
+ #ifdef DEBUG
+ 	    fprintf(stderr, "[ffnetdev] VNC: Send OSD Data %d/%d/%d/%d x1/y1/x2/y2 %d Bytes\n", x1, y1, x2, y2, BufferSize);
+ #endif
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-03-29 13:32:23 UTC (rev 30)
++++ trunk/pes2ts.c	2007-07-01 22:15:56 UTC (rev 31)
+@@ -291,7 +291,9 @@
+       
+       
+          // check for valid stream id type: is it video or audio or unknown?
+-         if (data[3]>=0x00)
++         if ( ((data[3]>=0xC0) && (data[3]<=0xDF)) || 
++              (data[3] == 0xBD) || 
++              ((data[3]>=0xE0) && (data[3]<=0xEF)))
+          {
+             while (m_OutputBuffer->Free() < (int)packetlen) 
+             {	
+
+
+

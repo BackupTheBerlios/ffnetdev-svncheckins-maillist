@@ -1,0 +1,246 @@
+From zwer at mail.berlios.de  Wed Aug 29 01:13:19 2007
+From: zwer at mail.berlios.de (zwer at mail.berlios.de)
+Date: Wed, 29 Aug 2007 01:13:19 +0200
+Subject: [Ffnetdev-svncheckins] r32 - trunk
+Message-ID: <200708282313.l7SNDJli007893@sheep.berlios.de>
+
+Author: zwer
+Date: 2007-08-29 01:12:52 +0200 (Wed, 29 Aug 2007)
+New Revision: 32
+
+Modified:
+   trunk/clientcontrol.c
+   trunk/ffnetdev.c
+   trunk/netosd.c
+   trunk/osdworker.c
+   trunk/pes2ts.c
+   trunk/pes2ts.h
+   trunk/streamdevice.c
+   trunk/tsworker.c
+Log:
+- Plugin l?\195?\164sst sich jetzt sauber beenden (beim beenden vom VDR gab es Probleme)
+
+Modified: trunk/clientcontrol.c
+===================================================================
+--- trunk/clientcontrol.c	2007-07-01 22:15:56 UTC (rev 31)
++++ trunk/clientcontrol.c	2007-08-28 23:12:52 UTC (rev 32)
+@@ -30,6 +30,8 @@
+ 
+ cClientControl::~cClientControl() 
+ {
++	dsyslog("[ffnetdev] Destructor cClientControl\n");
++
+ 	if (m_Active) 
+ 	   Stop();
+ 	delete m_ClientSocket;
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-07-01 22:15:56 UTC (rev 31)
++++ trunk/ffnetdev.c	2007-08-28 23:12:52 UTC (rev 32)
+@@ -68,6 +68,8 @@
+ 
+ cPluginFFNetDev::~cPluginFFNetDev()
+ {
++  dsyslog("[ffnetdev] Destructor cPluginFFNetDev\n");
++
+   cOSDWorker::Exit();
+   cTSWorker::Exit();
+   cClientControl::Exit();
+
+Modified: trunk/netosd.c
+===================================================================
+--- trunk/netosd.c	2007-07-01 22:15:56 UTC (rev 31)
++++ trunk/netosd.c	2007-08-28 23:12:52 UTC (rev 32)
+@@ -21,6 +21,7 @@
+ #ifdef DEBUG
+    fprintf(stderr,"[ffnetdev] NetOSD: Destructor cNetOSD.\n");
+ #endif
++   dsyslog("[ffnetdev] Destructor cNetOSD\n");
+    
+    cOSDWorker::ClearScreen();    
+ }
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2007-07-01 22:15:56 UTC (rev 31)
++++ trunk/osdworker.c	2007-08-28 23:12:52 UTC (rev 32)
+@@ -60,7 +60,10 @@
+ 	CreateSendBuffer(720 * 576);
+ }
+ 
+-cOSDWorker::~cOSDWorker() {
++cOSDWorker::~cOSDWorker() 
++{
++	dsyslog("[ffnetdev] Destructor cOSDWorker\n");
++
+ 	if (m_Active) Stop();
+ 	
+ 	if (m_pEncoder != NULL) 
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-07-01 22:15:56 UTC (rev 31)
++++ trunk/pes2ts.c	2007-08-28 23:12:52 UTC (rev 32)
+@@ -23,6 +23,7 @@
+ 
+ cPESRemux::~cPESRemux()
+ {
++   InputMutex.Unlock();
+    delete m_InputBuffer;
+ }
+ 
+@@ -39,7 +40,8 @@
+ cPES2TSRemux::cPES2TSRemux(int VPid, int APid): cPESRemux(INPUTBUFSIZE),
+     cThread("[ffnetdev] PES2TS remux"),
+     m_OutputBuffer(new cRingBufferLinear(OUTPUTBUFSIZE, TS_SIZE * 2)),
+-    m_Active(false)
++    m_Active(false),
++    m_Ended(false)
+ {
+   vpid = VPid;
+   apid = APid;
+@@ -48,7 +50,10 @@
+ 
+ cPES2TSRemux::~cPES2TSRemux()
+ {
++  dsyslog("[ffnetdev] Destructor cPES2TSRemux\n");
+   m_Active = false;
++  while (!m_Ended)
++    cCondWait::SleepMs(10);
+   delete m_OutputBuffer;
+ }
+ 
+@@ -67,6 +72,7 @@
+ 
+   
+   m_Active = true;
++  m_Ended = false;
+   while (m_Active) {
+     int count=0;
+ //    fprintf(stderr, "[ffnetdev] Remuxer: Inputbuffersize: %d, Outputbuffersize: %d\n", 
+@@ -168,7 +174,7 @@
+     {	
+       if (!m_Active)
+          continue;
+-   	cCondWait::SleepMs(10);
++      cCondWait::SleepMs(10);
+    	//dsyslog("[ffnetdev] Remuxer: sleep %d %d\n", m_OutputBuffer->Free(), tspacketlen);
+     }
+ 
+@@ -207,7 +213,7 @@
+     UnlockOutput();
+ 	
+   }
+-  m_Active = false;
++  m_Ended = true;
+ }
+ 
+ 
+@@ -215,7 +221,8 @@
+ cPES2PESRemux::cPES2PESRemux(): cPESRemux(INPUTBUFSIZE),
+     cThread("[ffnetdev] PES2PES remux"),
+     m_OutputBuffer(new cRingBufferLinear(OUTPUTBUFSIZE, IPACKS)),
+-    m_Active(false)
++    m_Active(false),
++    m_Ended(false)
+ {
+    m_OutputBuffer->SetTimeouts(0, 1000);
+    Start();
+@@ -223,7 +230,10 @@
+ 
+ cPES2PESRemux::~cPES2PESRemux()
+ {
++  dsyslog("[ffnetdev] Destructor cPES2PESRemux\n");
+   m_Active = false;
++  while (!m_Ended)
++    cCondWait::SleepMs(10);
+   delete m_OutputBuffer;
+ }
+ 
+@@ -233,7 +243,7 @@
+    unsigned int minNeededPacketlen = 10; // needed for read packet len: 6 Should be enought ... but makes no sense
+    
+    m_Active = true;
+-   
++   m_Ended = false;
+    while (m_Active) 
+    {
+       int count=0;
+@@ -298,7 +308,7 @@
+             while (m_OutputBuffer->Free() < (int)packetlen) 
+             {	
+                if (!m_Active)
+-               continue;
++                 continue;
+                cCondWait::SleepMs(10);
+                //dsyslog("[ffnetdev] Remuxer: sleep %d %d\n", m_OutputBuffer->Free(), tspacketlen);
+             }
+@@ -339,5 +349,5 @@
+          continue;
+       } 
+    }
+-   m_Active = false;
++   m_Ended = true;
+ }
+
+Modified: trunk/pes2ts.h
+===================================================================
+--- trunk/pes2ts.h	2007-07-01 22:15:56 UTC (rev 31)
++++ trunk/pes2ts.h	2007-08-28 23:12:52 UTC (rev 32)
+@@ -49,6 +49,7 @@
+ private:
+ 	cRingBufferLinear *m_OutputBuffer;
+ 	bool               m_Active;
++	bool               m_Ended;
+ 	unsigned short	   vpid;
+ 	unsigned short	   apid;
+   
+@@ -73,6 +74,7 @@
+ private:
+ 	cRingBufferLinear *m_OutputBuffer;
+ 	bool               m_Active;
++	bool               m_Ended;
+ 	
+ protected:
+ 	virtual void Action(void);
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-07-01 22:15:56 UTC (rev 31)
++++ trunk/streamdevice.c	2007-08-28 23:12:52 UTC (rev 32)
+@@ -24,9 +24,12 @@
+ 
+ cStreamDevice::~cStreamDevice(void)
+ {
+-   dsyslog("[ffnetdev] Device: Destructor cStreamDevice \n");
+-   m_PlayState = psPlay;
+-   DELETENULL(m_Remux);
++  dsyslog("[ffnetdev] Device: Destructor cStreamDevice \n");
++  m_PlayState = psPlay;
++  cOSDWorker::Exit();
++  cTSWorker::Exit();
++  cClientControl::Exit();
++  DELETENULL(m_Remux);
+ }
+ 
+ 
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2007-07-01 22:15:56 UTC (rev 31)
++++ trunk/tsworker.c	2007-08-28 23:12:52 UTC (rev 32)
+@@ -43,7 +43,9 @@
+ 	origPrimaryDevice = -1;
+ }
+ 
+-cTSWorker::~cTSWorker() {
++cTSWorker::~cTSWorker() 
++{
++	dsyslog("[ffnetdev] Destructor cTSWorker\n");
+ 	if (m_Active) Stop();
+ }
+ 
+
+
+

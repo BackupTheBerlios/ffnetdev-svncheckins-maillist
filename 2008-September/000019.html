@@ -1,0 +1,155 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r34 - trunk
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2008-September/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r34%20-%20trunk&In-Reply-To=%3C200809042016.m84KGoqa031566%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r34 - trunk</H1>
+    <B>zwer at mail.berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r34%20-%20trunk&In-Reply-To=%3C200809042016.m84KGoqa031566%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r34 - trunk">zwer at mail.berlios.de
+       </A><BR>
+    <I>Thu Sep  4 22:16:50 CEST 2008</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19">[ date ]</a>
+              <a href="thread.html#19">[ thread ]</a>
+              <a href="subject.html#19">[ subject ]</a>
+              <a href="author.html#19">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2008-09-04 22:16:47 +0200 (Thu, 04 Sep 2008)
+New Revision: 34
+
+Modified:
+   trunk/ffnetdev.c
+   trunk/netosd.c
+   trunk/netosd.h
+   trunk/remote.c
+   trunk/remote.h
+Log:
+Lauff?\195?\164hg unter VDR 1.6.0 gemacht
+
+
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/ffnetdev.c	2008-09-04 20:16:47 UTC (rev 34)
+@@ -33,10 +33,10 @@
+ 	
+ }
+ 
+-cOsd * cNetOSDProvider::CreateOsd(int Left, int Top)
++cOsd * cNetOSDProvider::CreateOsd(int Left, int Top, uint Level)
+ {
+     
+-    osd = new cNetOSD(Left, Top);
++    osd = new cNetOSD(Left, Top, Level);
+     return osd;
+ }
+ 
+
+Modified: trunk/netosd.c
+===================================================================
+--- trunk/netosd.c	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/netosd.c	2008-09-04 20:16:47 UTC (rev 34)
+@@ -9,7 +9,7 @@
+ #include &quot;osdworker.h&quot;
+ 
+ //////////////////////////////////////////////////////////////////////////////////////////////////
+-cNetOSD::cNetOSD(int Left, int Top) : cOsd(Left, Top)
++cNetOSD::cNetOSD(int XOfs, int YOfs, uint Level) : cOsd(XOfs, YOfs, Level)
+ {
+ #ifdef DEBUG   
+    fprintf(stderr,&quot;[ffnetdev] NetOSD: Constructor cNetOSD.\n&quot;);
+
+Modified: trunk/netosd.h
+===================================================================
+--- trunk/netosd.h	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/netosd.h	2008-09-04 20:16:47 UTC (rev 34)
+@@ -17,7 +17,7 @@
+ 	bool truecolor;
+ protected:
+ public:
+-    cNetOSD(int XOfs, int XOfs);
++    cNetOSD(int XOfs, int YOfs, uint Level = OSD_LEVEL_DEFAULT);
+     virtual ~cNetOSD();
+     virtual eOsdError CanHandleAreas(const tArea *Areas, int NumAreas);
+     virtual void Flush(void);
+@@ -31,7 +31,7 @@
+     cNetOSD **NetOSD;
+ public:
+     cNetOSDProvider(void);
+-    virtual cOsd *CreateOsd(int Left, int Top);
++    virtual cOsd *CreateOsd(int Left, int Top, uint Level);
+ };
+ 
+ #endif //_NETOSD__H
+
+Modified: trunk/remote.c
+===================================================================
+--- trunk/remote.c	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/remote.c	2008-09-04 20:16:47 UTC (rev 34)
+@@ -27,7 +27,7 @@
+ 	return true;
+ }
+ 
+-bool cMyRemote::Put(uint64 Code, bool Repeat, bool Release)
++bool cMyRemote::Put(uint64_t Code, bool Repeat, bool Release)
+ {
+ #if VDRVERSNUM &gt;= 10347
+     if ((cRemote::IsLearning()) &amp;&amp; (Release))
+
+Modified: trunk/remote.h
+===================================================================
+--- trunk/remote.h	2007-09-28 14:20:03 UTC (rev 33)
++++ trunk/remote.h	2008-09-04 20:16:47 UTC (rev 34)
+@@ -17,7 +17,7 @@
+   cMyRemote(const char *Name);
+   virtual bool Initialize(void);
+   virtual bool Ready(void);
+-  virtual bool Put(uint64 Code, bool Repeat, bool Release);
++  virtual bool Put(uint64_t Code, bool Repeat, bool Release);
+ };
+ 
+ 
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#19">[ date ]</a>
+              <a href="thread.html#19">[ thread ]</a>
+              <a href="subject.html#19">[ subject ]</a>
+              <a href="author.html#19">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

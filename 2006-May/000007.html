@@ -1,0 +1,122 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r22 - trunk
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2006-May/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r22%20-%20trunk&In-Reply-To=%3C200605182231.k4IMVZ9X014428%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000006.html">
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r22 - trunk</H1>
+    <B>zwer at berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r22%20-%20trunk&In-Reply-To=%3C200605182231.k4IMVZ9X014428%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r22 - trunk">zwer at berlios.de
+       </A><BR>
+    <I>Fri May 19 00:31:35 CEST 2006</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000006.html">[Ffnetdev-svncheckins] r21 - trunk
+</A></li>
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#7">[ date ]</a>
+              <a href="thread.html#7">[ thread ]</a>
+              <a href="subject.html#7">[ subject ]</a>
+              <a href="author.html#7">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2006-05-19 00:31:29 +0200 (Fri, 19 May 2006)
+New Revision: 22
+
+Modified:
+   trunk/osdworker.c
+Log:
+- fixed two bugs
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2006-05-17 23:01:23 UTC (rev 21)
++++ trunk/osdworker.c	2006-05-18 22:31:29 UTC (rev 22)
+@@ -56,6 +56,8 @@
+ 	ClientFormat.trueColour = 0;
+ 	m_bOSDisClear = true;
+ 	m_bColorsChanged = false;
++	
++	CreateSendBuffer(720 * 576);
+ }
+ 
+ cOSDWorker::~cOSDWorker() {
+@@ -209,14 +211,24 @@
+    if ((m_Instance-&gt;state==HANDSHAKE_OK) &amp;&amp; (m_Instance-&gt;m_pEncoder != NULL) &amp;&amp;
+        (x1 || x2 || y1 || y2 || (m_Instance-&gt;m_pOsdBitmap-&gt;Dirty(x1, y1, x2, y2))))
+    {	    
++	dsyslog(&quot;[ffnetdev] VNC: Rect x/y/w/h %d/%d/%d/%d\n&quot;, x1, y1, x2-x1, y2-y1);
++	
++	if ((x2-x1) * (y2-y1) == 0)
++	{
++	    dsyslog(&quot;[ffnetdev] VNC: zero size rect - ignoring\n&quot;);
++	    
++	    return false;
++	}
++   
+ 	rfbFramebufferUpdateMsg fu;
+ 	struct timeval curtime;
+ 	gettimeofday(&amp;curtime, 0);
+ 	curtime.tv_sec = curtime.tv_sec - (((int)curtime.tv_sec / 1000000) * 1000000);
+-	if ((curtime.tv_sec * 1000 + (curtime.tv_usec / 1000) &lt; m_Instance-&gt;m_lasttime.tv_sec * 1000 + (m_Instance-&gt;m_lasttime.tv_usec / 1000) + 100) ||
+-    	    (m_Instance-&gt;m_pEncoder == NULL))
++	if (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000) &lt; m_Instance-&gt;m_lasttime.tv_sec * 1000 + (m_Instance-&gt;m_lasttime.tv_usec / 1000) + 100)
+ 	{
+ 	    m_Instance-&gt;m_lasttime = curtime;	
++	    dsyslog(&quot;[ffnetdev] VNC: updatetime to short - ignoring\n&quot;);
++	    
+ 	    return false;
+ 	}
+ 	else
+@@ -236,9 +248,9 @@
+    	fu.type=rfbFramebufferUpdate;
+    	fu.nRects=Swap16IfLE(1);
+    	OSDWrite((unsigned char*)&amp;fu, sz_rfbFramebufferUpdateMsg);
+-	int BufferSize = m_Instance-&gt;m_pEncoder-&gt;RequiredBuffSize(x2-x1, y2-y1);
+-	m_Instance-&gt;CreateSendBuffer(BufferSize);
+-	BufferSize = m_Instance-&gt;m_pEncoder-&gt;EncodeRect((BYTE*)(m_Instance-&gt;m_pOsdBitmap-&gt;Data(0, 0)), m_Instance-&gt;m_pSendBuffer, rect);
++	//int BufferSize = m_Instance-&gt;m_pEncoder-&gt;RequiredBuffSize(x2-x1, y2-y1);
++	//m_Instance-&gt;CreateSendBuffer(BufferSize);
++	int BufferSize = m_Instance-&gt;m_pEncoder-&gt;EncodeRect((BYTE*)(m_Instance-&gt;m_pOsdBitmap-&gt;Data(0, 0)), m_Instance-&gt;m_pSendBuffer, rect);
+ #ifdef DEBUG
+ 	fprintf(stderr, &quot;[ffnetdev] VNC: Send OSD Data %d Bytes\n&quot;, BufferSize);
+ #endif
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000006.html">[Ffnetdev-svncheckins] r21 - trunk
+</A></li>
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#7">[ date ]</a>
+              <a href="thread.html#7">[ thread ]</a>
+              <a href="subject.html#7">[ subject ]</a>
+              <a href="author.html#7">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

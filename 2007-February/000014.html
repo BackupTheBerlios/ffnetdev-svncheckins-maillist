@@ -1,0 +1,300 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r29 - trunk
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2007-February/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r29%20-%20trunk&In-Reply-To=%3C200702182158.l1ILwDQ1005660%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000013.html">
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r29 - trunk</H1>
+    <B>zwer at mail.berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r29%20-%20trunk&In-Reply-To=%3C200702182158.l1ILwDQ1005660%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r29 - trunk">zwer at mail.berlios.de
+       </A><BR>
+    <I>Sun Feb 18 22:58:13 CET 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000013.html">[Ffnetdev-svncheckins] r28 - trunk
+</A></li>
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14">[ date ]</a>
+              <a href="thread.html#14">[ thread ]</a>
+              <a href="subject.html#14">[ subject ]</a>
+              <a href="author.html#14">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2007-02-18 22:57:59 +0100 (Sun, 18 Feb 2007)
+New Revision: 29
+
+Modified:
+   trunk/clientcontrol.c
+   trunk/clientcontrol.h
+   trunk/ffnetdev.c
+   trunk/pes2ts.c
+   trunk/streamdevice.c
+   trunk/streamdevice.h
+Log:
+- vor- und zur?\195?\188ckspulen mit versch. Geschwindigkeiten, Pause
+- DVD-Wedergabe macht Probleme
+
+Modified: trunk/clientcontrol.c
+===================================================================
+--- trunk/clientcontrol.c	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/clientcontrol.c	2007-02-18 21:57:59 UTC (rev 29)
+@@ -214,7 +214,7 @@
+    
+    data.pakType = ptPlayState;
+    data.dataLen = sizeof(state);
+-   dsyslog(&quot;dataLen %d, dataSize %d&quot;, data.dataLen, sizeof(data));
++   dsyslog(&quot;[ffnetdev] SendPlayState: PlayMode: %d, bPlay: %d, bForward: %d, iSpeed: %d&quot;, PlayMode, bPlay, bForward, iSpeed);
+    if (m_Instance-&gt;m_ClientSocket-&gt;Write(&amp;data, sizeof(data)) == sizeof(data))
+    {
+       if (m_Instance-&gt;m_ClientSocket-&gt;Write(&amp;state, sizeof(state)) == sizeof(state))
+@@ -268,3 +268,21 @@
+    else
+       return false;
+ }
++
++bool cClientControl::SendSFreeze() 
++{
++   SClientControl data;
++   int written, available, done;
++  
++   if ((m_Instance == NULL) || (m_Instance-&gt;m_ClientSocket == NULL))
++      return false;
++  
++   data.pakType = ptFreeze;
++   data.dataLen = 0;
++   if (m_Instance-&gt;m_ClientSocket-&gt;Write(&amp;data, sizeof(data)) == sizeof(data))
++   {     
++      return true;
++   }
++   else
++      return false;
++}
+
+Modified: trunk/clientcontrol.h
+===================================================================
+--- trunk/clientcontrol.h	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/clientcontrol.h	2007-02-18 21:57:59 UTC (rev 29)
+@@ -13,7 +13,7 @@
+ #include &quot;tools/socket.h&quot;
+ #include &quot;ffnetdev.h&quot;
+ 
+-enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq, ptStillPicture };
++enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq, ptStillPicture, ptFreeze };
+ 
+ struct SClientControl
+ {
+@@ -72,6 +72,7 @@
+ 	static bool SendPlayState(ePlayMode PlayMode, bool bPlay, bool bForward, int iSpeed);
+ 	static bool PlayStateReq(void) { return m_Instance-&gt;m_bPlayStateReq; };
+ 	static bool SendStillPicture(const uchar *Data, int Length);
++	static bool SendSFreeze();
+ };
+ 
+ inline bool cClientControl::Active(void) {
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/ffnetdev.c	2007-02-18 21:57:59 UTC (rev 29)
+@@ -213,7 +213,11 @@
+ {	
+    int i = 0;
+    while ((cOsd::IsOpen() &gt; 0) &amp;&amp; (i-- &gt; 0))
+-   cRemote::Put(kBack);
++      cRemote::Put(kBack);
++      
++   i = 0;
++   while ((strlen(m_ClientName) == 0) &amp;&amp; (i++ &lt; 2))
++      sleep(1); 
+    
+    if ((config.iAutoSetPrimaryDVB == 1) &amp;&amp; (m_origPrimaryDevice == -1))
+    {
+@@ -237,11 +241,7 @@
+    if(EnableRemote) 
+    {
+       if (m_Remote == NULL)
+-      {
+-         i = 0;
+-         while ((strlen(m_ClientName) == 0) &amp;&amp; (i++ &lt; 2))
+-            sleep(1);
+-            
++      {            
+          char str[30];
+          if (strlen(m_ClientName) &gt; 0)
+             sprintf(str, &quot;ffnetdev-%s&quot;, m_ClientName);
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/pes2ts.c	2007-02-18 21:57:59 UTC (rev 29)
+@@ -291,9 +291,7 @@
+       
+       
+          // check for valid stream id type: is it video or audio or unknown?
+-         if ( ((data[3]&gt;=0xC0) &amp;&amp; (data[3]&lt;=0xDF)) || 
+-              (data[3] == 0xBD) || 
+-              ((data[3]&gt;=0xE0) &amp;&amp; (data[3]&lt;=0xEF)))
++         if (data[3]&gt;=0x00)
+          {
+             while (m_OutputBuffer-&gt;Free() &lt; (int)packetlen) 
+             {	
+@@ -311,7 +309,7 @@
+          } 
+          else if (data[3]&gt;=0xBE)
+          {
+-            dsyslog(&quot;[ffnetdev] Remuxer: Padding stream removed.\n&quot;);
++            //dsyslog(&quot;[ffnetdev] Remuxer: Padding stream removed.\n&quot;);
+             m_InputBuffer-&gt;Del(packetlen);
+             InputMutex.Unlock();
+             continue;
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/streamdevice.c	2007-02-18 21:57:59 UTC (rev 29)
+@@ -75,16 +75,18 @@
+    cControl *pControl = cControl::Control();
+    if (pControl)
+    {
+-      bool Forward;
+-      int Speed;
+-      pControl-&gt;GetReplayMode(m_Playing, Forward, Speed);
+-      if (!cClientControl::SendPlayState(PlayMode, m_Playing, Forward, Speed))
++      pControl-&gt;GetReplayMode(m_Playing, m_Forward, m_Speed);
++      if (m_Speed == -1)
++         m_Speed = 0;
++      if (!cClientControl::SendPlayState(PlayMode, m_Playing, m_Forward, m_Speed))
+          m_PlayState = psPlay;
+    }
+    else
+    {
+       m_Playing = false;
+-      if (!cClientControl::SendPlayState(PlayMode, false, false, 0))
++      m_Forward = true;
++      m_Speed = 0;
++      if (!cClientControl::SendPlayState(PlayMode, m_Playing, m_Forward, m_Speed))
+          m_PlayState = psPlay;
+    }
+    return true;
+@@ -93,15 +95,14 @@
+ void cStreamDevice::TrickSpeed(int Speed)
+ {
+    dsyslog(&quot;[ffnetdev] Device: Trickspeed. Speed: %d\n&quot;, Speed);
++     
+    cControl *pControl = cControl::Control();
+    if (pControl)
+-   {
+-      bool Forward;
+-      int Speed;
+-      pControl-&gt;GetReplayMode(m_Playing, Forward, Speed);
+-      if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed))
+-         m_PlayState = psPlay;
+-   }
++      pControl-&gt;GetReplayMode(m_Playing, m_Forward, m_Speed);
++   
++   m_Speed = Speed;
++   if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, m_Forward, m_Speed))
++      m_PlayState = psPlay;
+ }
+ 
+ void cStreamDevice::Clear(void)
+@@ -113,28 +114,34 @@
+ {
+    dsyslog(&quot;[ffnetdev] Device: Play.\n&quot;);
+    
+-   cControl *pControl = cControl::Control();
+-   if (pControl)
+-   {
+-      bool Forward;
+-      int Speed;
+-      pControl-&gt;GetReplayMode(m_Playing, Forward, Speed);
+-      if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed))
+-         m_PlayState = psPlay;
+-   }
+-   
++   m_PlayMode = pmAudioVideo;
++   m_Playing = true;
++   m_Forward = true;
++   m_Speed = 0;
++   if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, m_Forward, m_Speed))
++      m_PlayState = psPlay;
++    
+ //    cDevice::Play();
+ }
+ 
+ void cStreamDevice::Freeze(void)
+ {
+-    dsyslog(&quot;[ffnetdev] Device: Freeze(not implemented).\n&quot;);
++    dsyslog(&quot;[ffnetdev] Device: Freeze.\n&quot;);
++    
++    m_Playing = false;
++    cClientControl::SendSFreeze();
++      
+ //    cDevice::Freeze();
+ }
+ 
+ void cStreamDevice::Mute(void)
+ {
+-   dsyslog(&quot;[ffnetdev] Device: Mute(not implemented).\n&quot;);
++   dsyslog(&quot;[ffnetdev] Device: Mute.\n&quot;);
++   
++   m_PlayMode = pmVideoOnly;
++   if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, m_Forward, m_Speed))
++      m_PlayState = psPlay;
++      
+ //    cDevice::Mute();
+ }
+ 
+
+Modified: trunk/streamdevice.h
+===================================================================
+--- trunk/streamdevice.h	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/streamdevice.h	2007-02-18 21:57:59 UTC (rev 29)
+@@ -21,6 +21,8 @@
+ private:
+    cPESRemux *m_Remux;
+    bool       m_Playing;
++   bool       m_Forward;
++   int       m_Speed;
+    ePlayState m_PlayState;
+    ePlayMode  m_PlayMode;
+    
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000013.html">[Ffnetdev-svncheckins] r28 - trunk
+</A></li>
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#14">[ date ]</a>
+              <a href="thread.html#14">[ thread ]</a>
+              <a href="subject.html#14">[ subject ]</a>
+              <a href="author.html#14">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

@@ -1,0 +1,39 @@
+From tobe at mail.berlios.de  Thu Mar 29 15:32:24 2007
+From: tobe at mail.berlios.de (tobe at BerliOS)
+Date: Thu, 29 Mar 2007 15:32:24 +0200
+Subject: [Ffnetdev-svncheckins] r30 - trunk
+Message-ID: <200703291332.l2TDWOhe031587@sheep.berlios.de>
+
+Author: tobe
+Date: 2007-03-29 15:32:23 +0200 (Thu, 29 Mar 2007)
+New Revision: 30
+
+Modified:
+   trunk/streamdevice.c
+Log:
+Workaround for Clear
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-02-18 21:57:59 UTC (rev 29)
++++ trunk/streamdevice.c	2007-03-29 13:32:23 UTC (rev 30)
+@@ -107,7 +107,15 @@
+ 
+ void cStreamDevice::Clear(void)
+ {
+-   dsyslog("[ffnetdev] Device: Clear(not implemented).\n");
++   dsyslog("[ffnetdev] Device: Clear\n");
++
++// workaround for clearing in vdrviewer (speed-change resets the buffer)
++   if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, m_Forward, 1))
++      m_PlayState = psPlay;
++
++   if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, m_Forward, m_Speed))
++      m_PlayState = psPlay;
++
+ //    cDevice::Clear();
+ }
+ void cStreamDevice::Play(void)
+
+
+

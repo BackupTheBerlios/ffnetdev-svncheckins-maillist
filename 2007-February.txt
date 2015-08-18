@@ -1,0 +1,975 @@
+From zwer at mail.berlios.de  Mon Feb 12 00:41:04 2007
+From: zwer at mail.berlios.de (zwer at mail.berlios.de)
+Date: Mon, 12 Feb 2007 00:41:04 +0100
+Subject: [Ffnetdev-svncheckins] r28 - trunk
+Message-ID: <200702112341.l1BNf4HJ019509@sheep.berlios.de>
+
+Author: zwer
+Date: 2007-02-12 00:40:56 +0100 (Mon, 12 Feb 2007)
+New Revision: 28
+
+Modified:
+   trunk/clientcontrol.c
+   trunk/clientcontrol.h
+   trunk/ffnetdev.c
+   trunk/pes2ts.c
+   trunk/pes2ts.h
+   trunk/streamdevice.c
+   trunk/tsworker.c
+Log:
+- noch h?\195?\182here Bitrate jetzt m?\195?\182glich
+- wiedergabe von DVD
+
+Modified: trunk/clientcontrol.c
+===================================================================
+--- trunk/clientcontrol.c	2007-01-30 23:30:54 UTC (rev 27)
++++ trunk/clientcontrol.c	2007-02-11 23:40:56 UTC (rev 28)
+@@ -166,6 +166,7 @@
+ 			   
+ 			   if ( (ret = m_ClientSocket->Read(&data, sizeof(data))) == sizeof(data)) 
+ 			   {
++			      dsyslog("pakType %d, dataLen %d", data.pakType, data.dataLen);
+ 			      switch (data.pakType)
+ 			      {
+ 			      case ptInfo: 
+@@ -201,8 +202,6 @@
+    SClientControl data;
+    SClientControlPlayState state;
+        
+-   int ret;
+-   
+    if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL))
+       return false;
+ 
+@@ -215,9 +214,10 @@
+    
+    data.pakType = ptPlayState;
+    data.dataLen = sizeof(state);
+-   if ((ret = m_Instance->m_ClientSocket->Write(&data, sizeof(data))) == sizeof(data))
++   dsyslog("dataLen %d, dataSize %d", data.dataLen, sizeof(data));
++   if (m_Instance->m_ClientSocket->Write(&data, sizeof(data)) == sizeof(data))
+    {
+-      if ((ret = m_Instance->m_ClientSocket->Write(&state, sizeof(state))) == sizeof(state))
++      if (m_Instance->m_ClientSocket->Write(&state, sizeof(state)) == sizeof(state))
+          return true;
+       else
+          return false;
+@@ -225,3 +225,46 @@
+    else
+       return false;
+ }
++
++
++bool cClientControl::SendStillPicture(const uchar *Data, int Length) 
++{
++   SClientControl data;
++   int written, available, done;
++  
++   if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL))
++      return false;
++  
++   data.pakType = ptStillPicture;
++   data.dataLen = Length;
++   if (m_Instance->m_ClientSocket->Write(&data, sizeof(data)) == sizeof(data))
++   {
++      available = Length;
++      done = 0;
++      while ((available > 0) && (m_Instance->m_bHaveClient) &&
++			    (!m_Instance->m_bCloseClientRequest))
++      {
++      
++         if (((written=m_Instance->m_ClientSocket->Write(Data + done, available)) < 0) && 
++             (errno != EAGAIN)) 
++         {
++            CloseStreamClient();
++            return false;
++         }
++         
++         if (written > 0)
++         {
++            available -= written;
++            done      += written;
++         }
++         else
++         {
++            cCondWait::SleepMs(5);
++         }
++      }
++      
++      return true;
++   }
++   else
++      return false;
++}
+
+Modified: trunk/clientcontrol.h
+===================================================================
+--- trunk/clientcontrol.h	2007-01-30 23:30:54 UTC (rev 27)
++++ trunk/clientcontrol.h	2007-02-11 23:40:56 UTC (rev 28)
+@@ -13,12 +13,12 @@
+ #include "tools/socket.h"
+ #include "ffnetdev.h"
+ 
+-enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq };
++enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq, ptStillPicture };
+ 
+ struct SClientControl
+ {
+    char pakType;
+-   char dataLen;
++   int dataLen;
+    char data[0];
+ };
+ 
+@@ -35,7 +35,13 @@
+    char Speed;
+ };
+ 
++struct SClientControlStillPicture
++{
++   uchar *Data;
++   int Length;
++};
+ 
++
+ // --- cClientControl -------------------------------------------------------------
+ 
+ class cClientControl : public cThread {
+@@ -65,6 +71,7 @@
+ 	
+ 	static bool SendPlayState(ePlayMode PlayMode, bool bPlay, bool bForward, int iSpeed);
+ 	static bool PlayStateReq(void) { return m_Instance->m_bPlayStateReq; };
++	static bool SendStillPicture(const uchar *Data, int Length);
+ };
+ 
+ inline bool cClientControl::Active(void) {
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-01-30 23:30:54 UTC (rev 27)
++++ trunk/ffnetdev.c	2007-02-11 23:40:56 UTC (rev 28)
+@@ -238,6 +238,10 @@
+    {
+       if (m_Remote == NULL)
+       {
++         i = 0;
++         while ((strlen(m_ClientName) == 0) && (i++ < 2))
++            sleep(1);
++            
+          char str[30];
+          if (strlen(m_ClientName) > 0)
+             sprintf(str, "ffnetdev-%s", m_ClientName);
+@@ -280,7 +284,6 @@
+       Remotes.Del(m_Remote);
+       m_Remote = NULL;
+    }
+-   dsyslog("[ffnetdev] -------------------\n");
+ }
+ 
+ void cPluginFFNetDev::SetClientName(char* ClientName)
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-01-30 23:30:54 UTC (rev 27)
++++ trunk/pes2ts.c	2007-02-11 23:40:56 UTC (rev 28)
+@@ -14,8 +14,8 @@
+ #include "pes2ts.h"
+ 
+ //////////////////////////////////////////////////////////////////////////////
+-cPESRemux::cPESRemux(int inputBufferSize, int outputBufferSize): 
+-   m_InputBuffer(new cRingBufferLinear(inputBufferSize, outputBufferSize))
++cPESRemux::cPESRemux(int inputBufferSize): 
++   m_InputBuffer(new cRingBufferLinear(inputBufferSize, IPACKS))
+ {
+    OutputLocked = false;
+    m_InputBuffer->SetTimeouts(0, 1000);  // IMPORTANT to avoid busy wait in threads main loop and thus a high CPU load
+@@ -36,7 +36,7 @@
+ 
+ 
+ //////////////////////////////////////////////////////////////////////////////
+-cPES2TSRemux::cPES2TSRemux(int VPid, int APid): cPESRemux(INPUTBUFSIZE, IPACKS),
++cPES2TSRemux::cPES2TSRemux(int VPid, int APid): cPESRemux(INPUTBUFSIZE),
+     cThread("[ffnetdev] PES2TS remux"),
+     m_OutputBuffer(new cRingBufferLinear(OUTPUTBUFSIZE, TS_SIZE * 2)),
+     m_Active(false)
+@@ -96,10 +96,10 @@
+ //	    m_OutputBuffer->Available(), m_InputBuffer->Available());
+ 
+     if ( count < (int)minNeededPacketlen )	{
+-       fprintf(stderr, "[ffnetdev] Remuxer: not enought bytes for PacketLen-Analysis, have only: %d\n", count);
++       dsyslog("[ffnetdev] Remuxer: not enought bytes for PacketLen-Analysis, have only: %d\n", count);
+        InputMutex.Unlock();
+        cCondWait::SleepMs(2);
+-      continue;
++     continue;
+     }
+ 
+     //DEBUG
+@@ -115,12 +115,12 @@
+           packetlen = ((data[4]<<8) | data[5]) + 6 ;
+     
+           if ( packetlen>IPACKS) {
+-              fprintf(stderr, "[ffnetdev] Remuxer: IPACKS changed? packet length was %d, maximum: %d\n"
++              dsyslog("[ffnetdev] Remuxer: IPACKS changed? packet length was %d, maximum: %d\n"
+                       "This should not happen! Please report!\n", packetlen, IPACKS);
+           }
+ 
+ 	  if ( count < (int)packetlen) {
+-	       fprintf(stderr, "[ffnetdev] Remuxer: not enought bytes for whole packet, have only: %d but LenShoud be %d\n", count, packetlen);
++	       dsyslog("[ffnetdev] Remuxer: not enought bytes for whole packet, have only: %d but LenShoud be %d\n", count, packetlen);
+ 	       InputMutex.Unlock();
+     	       cCondWait::SleepMs(1);
+ 	       continue;
+@@ -138,7 +138,7 @@
+                   cc=&vcc;
+               } 
+               else {
+-                  fprintf(stderr, "[ffnetdev] Remuxer: Unknown stream id: neither video nor audio type.\n");
++                  dsyslog("[ffnetdev] Remuxer: Unknown stream id: neither video nor audio type.\n");
+                   // throw away whole PES packet
+                   m_InputBuffer->Del(packetlen);
+                   InputMutex.Unlock();
+@@ -156,19 +156,20 @@
+       // no valid PES signature was found, so delete this stuff from ring buffer
+       // normally we should always receive a whole PES packet, since VDR always gives us a whole packet and not less or more
+       // with each call in streamdevice.c (PlayVideo, PlayAudio)
+-      fprintf(stderr, "[ffnetdev] Remuxer: No valid PES signature found. This should not happen.\n");
++      dsyslog("[ffnetdev] Remuxer: No valid PES signature found. This should not happen.\n");
+ 
+       m_InputBuffer->Del(1); // Probably it is better to delete 1 byte only to get in sync again!?
+       InputMutex.Unlock();
+       continue;
+     } 
+     
+-    int tspacketlen = ((int)packetlen/184) * 188  + ((packetlen % 184 > 0) ? 188 : 0); 
+-    while (m_OutputBuffer->Free() < tspacketlen) {	
+-	if (!m_Active)
+-    	    continue;
+-	cCondWait::SleepMs(10);
+-	//fprintf(stderr, "[ffnetdev] Remuxer: sleep %d %d\n", m_OutputBuffer->Free(), tspacketlen);
++    int tspacketlen = (packetlen/184) * 188  + ((packetlen % 184 > 0) ? 188 : 0); 
++    while (m_OutputBuffer->Free() < tspacketlen) 
++    {	
++      if (!m_Active)
++         continue;
++   	cCondWait::SleepMs(10);
++   	//dsyslog("[ffnetdev] Remuxer: sleep %d %d\n", m_OutputBuffer->Free(), tspacketlen);
+     }
+ 
+     LockOutput();
+@@ -211,10 +212,132 @@
+ 
+ 
+ //////////////////////////////////////////////////////////////////////////////
+-cPES2PESRemux::cPES2PESRemux(): cPESRemux(INPUTBUFSIZE + OUTPUTBUFSIZE, IPACKS)
++cPES2PESRemux::cPES2PESRemux(): cPESRemux(INPUTBUFSIZE),
++    cThread("[ffnetdev] PES2PES remux"),
++    m_OutputBuffer(new cRingBufferLinear(OUTPUTBUFSIZE, IPACKS)),
++    m_Active(false)
+ {
++   m_OutputBuffer->SetTimeouts(0, 1000);
++   Start();
+ }
+ 
+ cPES2PESRemux::~cPES2PESRemux()
+ {
++  m_Active = false;
++  delete m_OutputBuffer;
+ }
++
++void cPES2PESRemux::Action(void)
++{
++   unsigned int packetlen;
++   unsigned int minNeededPacketlen = 10; // needed for read packet len: 6 Should be enought ... but makes no sense
++   
++   m_Active = true;
++   
++   while (m_Active) 
++   {
++      int count=0;
++      //    fprintf(stderr, "[ffnetdev] Remuxer: Inputbuffersize: %d, Outputbuffersize: %d\n", 
++      //	    m_InputBuffer->Available(), m_OutputBuffer->Available());
++      
++      if (m_InputBuffer->Available() < (int)IPACKS*10) 
++      {	
++         cCondWait::SleepMs(5);
++         continue;
++      }
++      
++      if (!cTSWorker::HaveStreamClient()) 
++      {
++         ClearOutput();
++         cCondWait::SleepMs(10);
++         continue;
++      }
++      
++      
++      InputMutex.Lock();
++      uchar *data = m_InputBuffer->Get(count);
++      if (data==NULL) 
++      {
++         InputMutex.Unlock();
++         cCondWait::SleepMs(3);
++         continue;
++      }
++      
++      if ( count < (int)minNeededPacketlen )	
++      {
++         dsyslog("[ffnetdev] Remuxer: not enought bytes for PacketLen-Analysis, have only: %d\n", count);
++         InputMutex.Unlock();
++         cCondWait::SleepMs(2);
++         continue;
++      }
++      
++      // check for valid PES signature in PES header
++      if ( (data[0]==0x00) && (data[1]==0x00) && (data[2]==0x01) ) 
++      {    
++         packetlen = ((data[4]<<8) | data[5]) + 6 ;
++         
++         if ( packetlen>IPACKS) {
++           dsyslog("[ffnetdev] Remuxer: IPACKS changed? packet length was %d, maximum: %d\n"
++                   "This should not happen! Please report!\n", packetlen, IPACKS);
++         }
++   
++         if ( count < (int)packetlen) 
++         {
++            dsyslog("[ffnetdev] Remuxer: not enought bytes for whole packet, have only: %d but LenShoud be %d\n", count, packetlen);
++            InputMutex.Unlock();
++            cCondWait::SleepMs(1);
++            continue;
++         }
++      
++      
++         // check for valid stream id type: is it video or audio or unknown?
++         if ( ((data[3]>=0xC0) && (data[3]<=0xDF)) || 
++              (data[3] == 0xBD) || 
++              ((data[3]>=0xE0) && (data[3]<=0xEF)))
++         {
++            while (m_OutputBuffer->Free() < (int)packetlen) 
++            {	
++               if (!m_Active)
++               continue;
++               cCondWait::SleepMs(10);
++               //dsyslog("[ffnetdev] Remuxer: sleep %d %d\n", m_OutputBuffer->Free(), tspacketlen);
++            }
++    
++            LockOutput();
++            m_OutputBuffer->Put(data, packetlen);
++            // we are now finished with the PES packet, delete it from ring buffer
++            m_InputBuffer->Del(packetlen); 
++            UnlockOutput();  
++         } 
++         else if (data[3]>=0xBE)
++         {
++            dsyslog("[ffnetdev] Remuxer: Padding stream removed.\n");
++            m_InputBuffer->Del(packetlen);
++            InputMutex.Unlock();
++            continue;
++         }
++         else 
++         {
++            dsyslog("[ffnetdev] Remuxer: Unknown stream id: neither video nor audio type.\n");
++            // throw away whole PES packet
++            m_InputBuffer->Del(packetlen);
++            InputMutex.Unlock();
++            continue;
++         }
++         
++         InputMutex.Unlock();
++      }
++      else 
++      {
++         // no valid PES signature was found, so delete this stuff from ring buffer
++         // normally we should always receive a whole PES packet, since VDR always gives us a whole packet and not less or more
++         // with each call in streamdevice.c (PlayVideo, PlayAudio)
++         dsyslog("[ffnetdev] Remuxer: No valid PES signature found. This should not happen.\n");
++         
++         m_InputBuffer->Del(1); // Probably it is better to delete 1 byte only to get in sync again!?
++         InputMutex.Unlock();
++         continue;
++      } 
++   }
++   m_Active = false;
++}
+
+Modified: trunk/pes2ts.h
+===================================================================
+--- trunk/pes2ts.h	2007-01-30 23:30:54 UTC (rev 27)
++++ trunk/pes2ts.h	2007-02-11 23:40:56 UTC (rev 28)
+@@ -16,7 +16,8 @@
+ #define TS_SIZE         188
+ #define IPACKS		2048
+ 
+-class cPESRemux {
++class cPESRemux 
++{
+ private:
+    bool  	   	   OutputLocked;
+    
+@@ -25,7 +26,7 @@
+    cMutex  	         InputMutex;
+ 
+ public:
+-   cPESRemux(int inputBufferSize, int outputBufferSize);
++   cPESRemux(int inputBufferSize);
+ 	virtual ~cPESRemux();
+ 	
+    int Put(const uchar *Data, int Count);
+@@ -33,6 +34,7 @@
+    void ClearInput () { InputMutex.Lock(); m_InputBuffer ->Clear(); InputMutex.Unlock(); }
+    
+    virtual int Available(void) = 0;
++   virtual int Fill(void) = 0;
+    virtual int Free(void) = 0;
+    virtual int InputFree(void) = 0;
+    virtual uchar *Get(int &Count) = 0;
+@@ -42,7 +44,8 @@
+    void UnlockOutput() { OutputLocked = false; }
+ };
+ 
+-class cPES2TSRemux: public cPESRemux, cThread {
++class cPES2TSRemux: public cPESRemux, cThread 
++{
+ private:
+ 	cRingBufferLinear *m_OutputBuffer;
+ 	bool               m_Active;
+@@ -57,6 +60,7 @@
+ 	virtual ~cPES2TSRemux();
+ 
+    int Available(void) { return m_OutputBuffer->Available(); }
++   int Fill(void) { return m_InputBuffer->Available() + m_OutputBuffer->Available(); }
+ 	int Free(void) { return m_OutputBuffer->Free(); }
+ 	int InputFree(void) { return m_InputBuffer->Free(); }
+ 	uchar *Get(int &Count) { return  m_OutputBuffer->Get(Count); }
+@@ -64,18 +68,26 @@
+ 	void ClearOutput() { LockOutput(); m_OutputBuffer->Clear(); UnlockOutput(); }
+ };
+ 
+-class cPES2PESRemux: public cPESRemux {
++class cPES2PESRemux: public cPESRemux, cThread 
++{
++private:
++	cRingBufferLinear *m_OutputBuffer;
++	bool               m_Active;
++	
++protected:
++	virtual void Action(void);
++	
+ public:
+ 	cPES2PESRemux();
+ 	virtual ~cPES2PESRemux();
+ 
+-   int Available(void) { return m_InputBuffer->Available(); }
+-   int Free(void) { return m_InputBuffer->Free(); }
+-   int InputFree(void) { return m_InputBuffer->Free(); }
+-	uchar *Get(int &Count) { return  m_InputBuffer->Get(Count); }
+-	void DelOutput(int Count) { m_InputBuffer->Del(Count); }
+-	void ClearOutput() { LockOutput(); m_InputBuffer->Clear(); UnlockOutput(); } 
+-	
++   int Available(void) { return m_OutputBuffer->Available(); }
++   int Fill(void) { return m_InputBuffer->Available() + m_OutputBuffer->Available(); }
++	int Free(void) { return m_OutputBuffer->Free(); }
++	int InputFree(void) { return m_InputBuffer->Free(); }
++	uchar *Get(int &Count) { return  m_OutputBuffer->Get(Count); }
++	void DelOutput(int Count) { m_OutputBuffer->Del(Count); }
++	void ClearOutput() { LockOutput(); m_OutputBuffer->Clear(); UnlockOutput(); }
+ };
+ 
+ #endif // PES2TSREMUX_H
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-01-30 23:30:54 UTC (rev 27)
++++ trunk/streamdevice.c	2007-02-11 23:40:56 UTC (rev 28)
+@@ -25,6 +25,7 @@
+ cStreamDevice::~cStreamDevice(void)
+ {
+    dsyslog("[ffnetdev] Device: Destructor cStreamDevice \n");
++   m_PlayState = psPlay;
+    DELETENULL(m_Remux);
+ }
+ 
+@@ -77,12 +78,14 @@
+       bool Forward;
+       int Speed;
+       pControl->GetReplayMode(m_Playing, Forward, Speed);
+-      cClientControl::SendPlayState(PlayMode, m_Playing, Forward, Speed);
++      if (!cClientControl::SendPlayState(PlayMode, m_Playing, Forward, Speed))
++         m_PlayState = psPlay;
+    }
+    else
+    {
+       m_Playing = false;
+-      cClientControl::SendPlayState(PlayMode, false, false, 0);
++      if (!cClientControl::SendPlayState(PlayMode, false, false, 0))
++         m_PlayState = psPlay;
+    }
+    return true;
+ }
+@@ -96,7 +99,8 @@
+       bool Forward;
+       int Speed;
+       pControl->GetReplayMode(m_Playing, Forward, Speed);
+-      cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed);
++      if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed))
++         m_PlayState = psPlay;
+    }
+ }
+ 
+@@ -115,7 +119,8 @@
+       bool Forward;
+       int Speed;
+       pControl->GetReplayMode(m_Playing, Forward, Speed);
+-      cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed);
++      if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed))
++         m_PlayState = psPlay;
+    }
+    
+ //    cDevice::Play();
+@@ -140,7 +145,8 @@
+ 
+ void cStreamDevice::StillPicture(const uchar *Data, int Length)
+ {
+-   dsyslog("[ffnetdev] Device: StillPicture(not implemented).\n");
++   dsyslog("[ffnetdev] Device: StillPicture %d Bytes.\n", Length);
++   cClientControl::SendStillPicture(Data, Length);
+ }
+ 
+ bool cStreamDevice::Poll(cPoller &Poller, int TimeoutMs)
+@@ -158,12 +164,14 @@
+ {
+    if (cTSWorker::HaveStreamClient()) 
+    {
+-       while (((m_Remux->InputFree() < Length) && (!m_Playing) ||
+-               (m_Remux->Available() > TCP_SEND_SIZE * 10) && (m_Playing)) && cTSWorker::HaveStreamClient())
++       while ((((!m_Playing) && (m_Remux->InputFree() < Length)) || 
++               ((m_Playing) && ((m_Remux->InputFree() < Length) || 
++                                (m_Remux->Fill() > TCP_SEND_SIZE * 10)))) && 
++               (cTSWorker::HaveStreamClient()))
+            cCondWait::SleepMs(1);
+        int result=m_Remux->Put(Data, Length);
+        if (result!=Length) {
+-         fprintf(stderr,"[ffnetdev] Device: Did not put all in input buffer(audio). result:%d Length: %d Skipping Audio PES packet...\n", result, Length );
++         dsyslog("[ffnetdev] Device: Did not put all in input buffer(audio). result:%d Length: %d Skipping Audio PES packet...\n", result, Length );
+          // Delete part of data already written to buffer 
+          m_Remux->DelInput(result);
+          return (0);
+@@ -188,13 +196,14 @@
+ {
+    if (cTSWorker::HaveStreamClient()) 
+    {
+-
+-       while (((m_Remux->InputFree() < Length) && (!m_Playing) ||
+-               (m_Remux->Available() > TCP_SEND_SIZE * 10) && (m_Playing)) && cTSWorker::HaveStreamClient())
++       while ((((!m_Playing) && (m_Remux->InputFree() < Length)) || 
++               ((m_Playing) && ((m_Remux->InputFree() < Length) || 
++                                (m_Remux->Fill() > TCP_SEND_SIZE * 10)))) && 
++               (cTSWorker::HaveStreamClient()))
+            cCondWait::SleepMs(1);
+        int result=m_Remux->Put(Data, Length);
+        if (result!=Length) {
+-         fprintf(stderr,"[ffnetdev] Device: Did not put all in input buffer(video). result:%d Length: %d Skipping Video PES packet...\n", result, Length );
++         dsyslog("[ffnetdev] Device: Did not put all in input buffer(video). result:%d Length: %d Skipping Video PES packet...\n", result, Length );
+          // Delete part of data already written to buffer 
+          m_Remux->DelInput(result);
+          return (0);
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2007-01-30 23:30:54 UTC (rev 27)
++++ trunk/tsworker.c	2007-02-11 23:40:56 UTC (rev 28)
+@@ -182,79 +182,76 @@
+ 				} 	  
+ 			}
+ 			
+-			if ( select.CanWrite(*m_StreamClient) ) {
+-			   
++			if ( select.CanWrite(*m_StreamClient) ) 
++			{
+ 			   if (m_StreamDevice->GetPlayState() == psBufferReset)
+ 			   {
+ 			      cCondWait::SleepMs(10);
+ 			      m_StreamDevice->SetPlayState(psBufferReseted);
+ 			   }
+ 			   
+-			   if (m_StreamDevice->GetPlayState() == psBufferReseted)
++			   if (m_StreamDevice->GetPlayState() == psPlay)
+ 			   {
+-			      cCondWait::SleepMs(10);
+-			      continue;
+-		      }
+-			   
+-				int count=0;
+-				
+-				m_StreamDevice->LockOutput();
+-      				uchar *buffer = m_StreamDevice->Get(count);
+-				if (buffer!=NULL) {
+-				   count = (count > TCP_SEND_SIZE) ? TCP_SEND_SIZE : count;
+-					int available = count;
+-					int done      = 0;
+-					int written   = 0;
+-					while ((available > 0) && (have_Streamclient == true) &&
+-					       (!close_Streamclient_request))
+-					{
+-					
+-					    if (((written=m_StreamClient->Write(&buffer[done], available)) < 0) && 
+-						(errno != EAGAIN)) 
+-					    {
+-							CloseStreamClient();
+-					    }
+-					    
+-					    if (written > 0)
+-					    {
+-							available -= written;
+-							done      += written;
+-					    }
+-					    else
+-					    {
+-							cCondWait::SleepMs(5);
+-					    }
+-					}
+-					m_StreamDevice->Del(count);
+-
+-					struct timeval curtime;
+-					gettimeofday(&curtime, 0);
+-					if (oldtime.tv_sec == 0)
+-					{
+-					    oldtime = curtime;
+-					    bytessend    = 0;
+-					    oldbytessend = 0;
+-					}
+-					
+-					bytessend += count;
+-					if (curtime.tv_sec > oldtime.tv_sec + 10)
+-					{
+-						double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 
+-							- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;
+-						double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
+-						int bufstat = m_StreamDevice->Available() * 100 / (m_StreamDevice->Available() + m_StreamDevice->Free()); 
+-#ifdef DEBUG
+-						fprintf(stderr, "[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send, %d%% Buffer used\n",
+-							rate, bytessend - oldbytessend, bufstat);
+-#endif						
+-						dsyslog("[ffnetdev] Streamer: Rate %2.3f MBit/Sec, %d Bytes send, %d%% Buffer used\n",
+-							rate, bytessend - oldbytessend, bufstat);
+-						
+-						oldbytessend = bytessend;
+-						oldtime = curtime;
+-					}
+-				}
+-				m_StreamDevice->UnlockOutput();
++   		      int count=0;
++   				
++   				m_StreamDevice->LockOutput();
++         				uchar *buffer = m_StreamDevice->Get(count);
++   				if (buffer!=NULL) {
++   				   count = (count > TCP_SEND_SIZE) ? TCP_SEND_SIZE : count;
++   					int available = count;
++   					int done      = 0;
++   					int written   = 0;
++   					while ((available > 0) && (have_Streamclient == true) &&
++   					       (!close_Streamclient_request))
++   					{
++   					
++   					    if (((written=m_StreamClient->Write(&buffer[done], available)) < 0) && 
++   						(errno != EAGAIN)) 
++   					    {
++   							CloseStreamClient();
++   					    }
++   					    
++   					    if (written > 0)
++   					    {
++   							available -= written;
++   							done      += written;
++   					    }
++   					    else
++   					    {
++   							cCondWait::SleepMs(5);
++   					    }
++   					}
++   					m_StreamDevice->Del(count);
++   
++   					struct timeval curtime;
++   					gettimeofday(&curtime, 0);
++   					if (oldtime.tv_sec == 0)
++   					{
++   					    oldtime = curtime;
++   					    bytessend    = 0;
++   					    oldbytessend = 0;
++   					}
++   					
++   					bytessend += count;
++   					if (curtime.tv_sec > oldtime.tv_sec + 10)
++   					{
++   						double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 
++   							- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;
++   						double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
++   						int bufstat = m_StreamDevice->Available() * 100 / (m_StreamDevice->Available() + m_StreamDevice->Free()); 
++   #ifdef DEBUG
++   						fprintf(stderr, "[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send, %d%% Buffer used\n",
++   							rate, bytessend - oldbytessend, bufstat);
++   #endif						
++   						dsyslog("[ffnetdev] Streamer: Rate %2.3f MBit/Sec, %d Bytes send, %d%% Buffer used\n",
++   							rate, bytessend - oldbytessend, bufstat);
++   						
++   						oldbytessend = bytessend;
++   						oldtime = curtime;
++   					}
++   				}
++   				m_StreamDevice->UnlockOutput();
++   			}
+ 			}
+ 			
+ 			if ( select.CanRead(*m_StreamClient) )
+
+
+
+From zwer at mail.berlios.de  Sun Feb 18 22:58:13 2007
+From: zwer at mail.berlios.de (zwer at mail.berlios.de)
+Date: Sun, 18 Feb 2007 22:58:13 +0100
+Subject: [Ffnetdev-svncheckins] r29 - trunk
+Message-ID: <200702182158.l1ILwDQ1005660@sheep.berlios.de>
+
+Author: zwer
+Date: 2007-02-18 22:57:59 +0100 (Sun, 18 Feb 2007)
+New Revision: 29
+
+Modified:
+   trunk/clientcontrol.c
+   trunk/clientcontrol.h
+   trunk/ffnetdev.c
+   trunk/pes2ts.c
+   trunk/streamdevice.c
+   trunk/streamdevice.h
+Log:
+- vor- und zur?\195?\188ckspulen mit versch. Geschwindigkeiten, Pause
+- DVD-Wedergabe macht Probleme
+
+Modified: trunk/clientcontrol.c
+===================================================================
+--- trunk/clientcontrol.c	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/clientcontrol.c	2007-02-18 21:57:59 UTC (rev 29)
+@@ -214,7 +214,7 @@
+    
+    data.pakType = ptPlayState;
+    data.dataLen = sizeof(state);
+-   dsyslog("dataLen %d, dataSize %d", data.dataLen, sizeof(data));
++   dsyslog("[ffnetdev] SendPlayState: PlayMode: %d, bPlay: %d, bForward: %d, iSpeed: %d", PlayMode, bPlay, bForward, iSpeed);
+    if (m_Instance->m_ClientSocket->Write(&data, sizeof(data)) == sizeof(data))
+    {
+       if (m_Instance->m_ClientSocket->Write(&state, sizeof(state)) == sizeof(state))
+@@ -268,3 +268,21 @@
+    else
+       return false;
+ }
++
++bool cClientControl::SendSFreeze() 
++{
++   SClientControl data;
++   int written, available, done;
++  
++   if ((m_Instance == NULL) || (m_Instance->m_ClientSocket == NULL))
++      return false;
++  
++   data.pakType = ptFreeze;
++   data.dataLen = 0;
++   if (m_Instance->m_ClientSocket->Write(&data, sizeof(data)) == sizeof(data))
++   {     
++      return true;
++   }
++   else
++      return false;
++}
+
+Modified: trunk/clientcontrol.h
+===================================================================
+--- trunk/clientcontrol.h	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/clientcontrol.h	2007-02-18 21:57:59 UTC (rev 29)
+@@ -13,7 +13,7 @@
+ #include "tools/socket.h"
+ #include "ffnetdev.h"
+ 
+-enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq, ptStillPicture };
++enum CCPakType{ ptInfo=0, ptPlayState, ptPlayStateReq, ptStillPicture, ptFreeze };
+ 
+ struct SClientControl
+ {
+@@ -72,6 +72,7 @@
+ 	static bool SendPlayState(ePlayMode PlayMode, bool bPlay, bool bForward, int iSpeed);
+ 	static bool PlayStateReq(void) { return m_Instance->m_bPlayStateReq; };
+ 	static bool SendStillPicture(const uchar *Data, int Length);
++	static bool SendSFreeze();
+ };
+ 
+ inline bool cClientControl::Active(void) {
+
+Modified: trunk/ffnetdev.c
+===================================================================
+--- trunk/ffnetdev.c	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/ffnetdev.c	2007-02-18 21:57:59 UTC (rev 29)
+@@ -213,7 +213,11 @@
+ {	
+    int i = 0;
+    while ((cOsd::IsOpen() > 0) && (i-- > 0))
+-   cRemote::Put(kBack);
++      cRemote::Put(kBack);
++      
++   i = 0;
++   while ((strlen(m_ClientName) == 0) && (i++ < 2))
++      sleep(1); 
+    
+    if ((config.iAutoSetPrimaryDVB == 1) && (m_origPrimaryDevice == -1))
+    {
+@@ -237,11 +241,7 @@
+    if(EnableRemote) 
+    {
+       if (m_Remote == NULL)
+-      {
+-         i = 0;
+-         while ((strlen(m_ClientName) == 0) && (i++ < 2))
+-            sleep(1);
+-            
++      {            
+          char str[30];
+          if (strlen(m_ClientName) > 0)
+             sprintf(str, "ffnetdev-%s", m_ClientName);
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/pes2ts.c	2007-02-18 21:57:59 UTC (rev 29)
+@@ -291,9 +291,7 @@
+       
+       
+          // check for valid stream id type: is it video or audio or unknown?
+-         if ( ((data[3]>=0xC0) && (data[3]<=0xDF)) || 
+-              (data[3] == 0xBD) || 
+-              ((data[3]>=0xE0) && (data[3]<=0xEF)))
++         if (data[3]>=0x00)
+          {
+             while (m_OutputBuffer->Free() < (int)packetlen) 
+             {	
+@@ -311,7 +309,7 @@
+          } 
+          else if (data[3]>=0xBE)
+          {
+-            dsyslog("[ffnetdev] Remuxer: Padding stream removed.\n");
++            //dsyslog("[ffnetdev] Remuxer: Padding stream removed.\n");
+             m_InputBuffer->Del(packetlen);
+             InputMutex.Unlock();
+             continue;
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/streamdevice.c	2007-02-18 21:57:59 UTC (rev 29)
+@@ -75,16 +75,18 @@
+    cControl *pControl = cControl::Control();
+    if (pControl)
+    {
+-      bool Forward;
+-      int Speed;
+-      pControl->GetReplayMode(m_Playing, Forward, Speed);
+-      if (!cClientControl::SendPlayState(PlayMode, m_Playing, Forward, Speed))
++      pControl->GetReplayMode(m_Playing, m_Forward, m_Speed);
++      if (m_Speed == -1)
++         m_Speed = 0;
++      if (!cClientControl::SendPlayState(PlayMode, m_Playing, m_Forward, m_Speed))
+          m_PlayState = psPlay;
+    }
+    else
+    {
+       m_Playing = false;
+-      if (!cClientControl::SendPlayState(PlayMode, false, false, 0))
++      m_Forward = true;
++      m_Speed = 0;
++      if (!cClientControl::SendPlayState(PlayMode, m_Playing, m_Forward, m_Speed))
+          m_PlayState = psPlay;
+    }
+    return true;
+@@ -93,15 +95,14 @@
+ void cStreamDevice::TrickSpeed(int Speed)
+ {
+    dsyslog("[ffnetdev] Device: Trickspeed. Speed: %d\n", Speed);
++     
+    cControl *pControl = cControl::Control();
+    if (pControl)
+-   {
+-      bool Forward;
+-      int Speed;
+-      pControl->GetReplayMode(m_Playing, Forward, Speed);
+-      if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed))
+-         m_PlayState = psPlay;
+-   }
++      pControl->GetReplayMode(m_Playing, m_Forward, m_Speed);
++   
++   m_Speed = Speed;
++   if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, m_Forward, m_Speed))
++      m_PlayState = psPlay;
+ }
+ 
+ void cStreamDevice::Clear(void)
+@@ -113,28 +114,34 @@
+ {
+    dsyslog("[ffnetdev] Device: Play.\n");
+    
+-   cControl *pControl = cControl::Control();
+-   if (pControl)
+-   {
+-      bool Forward;
+-      int Speed;
+-      pControl->GetReplayMode(m_Playing, Forward, Speed);
+-      if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, Forward, Speed))
+-         m_PlayState = psPlay;
+-   }
+-   
++   m_PlayMode = pmAudioVideo;
++   m_Playing = true;
++   m_Forward = true;
++   m_Speed = 0;
++   if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, m_Forward, m_Speed))
++      m_PlayState = psPlay;
++    
+ //    cDevice::Play();
+ }
+ 
+ void cStreamDevice::Freeze(void)
+ {
+-    dsyslog("[ffnetdev] Device: Freeze(not implemented).\n");
++    dsyslog("[ffnetdev] Device: Freeze.\n");
++    
++    m_Playing = false;
++    cClientControl::SendSFreeze();
++      
+ //    cDevice::Freeze();
+ }
+ 
+ void cStreamDevice::Mute(void)
+ {
+-   dsyslog("[ffnetdev] Device: Mute(not implemented).\n");
++   dsyslog("[ffnetdev] Device: Mute.\n");
++   
++   m_PlayMode = pmVideoOnly;
++   if (!cClientControl::SendPlayState(m_PlayMode, m_Playing, m_Forward, m_Speed))
++      m_PlayState = psPlay;
++      
+ //    cDevice::Mute();
+ }
+ 
+
+Modified: trunk/streamdevice.h
+===================================================================
+--- trunk/streamdevice.h	2007-02-11 23:40:56 UTC (rev 28)
++++ trunk/streamdevice.h	2007-02-18 21:57:59 UTC (rev 29)
+@@ -21,6 +21,8 @@
+ private:
+    cPESRemux *m_Remux;
+    bool       m_Playing;
++   bool       m_Forward;
++   int       m_Speed;
+    ePlayState m_PlayState;
+    ePlayMode  m_PlayMode;
+    
+
+
+

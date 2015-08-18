@@ -1,0 +1,662 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r25 - in trunk: . tools
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2007-January/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r25%20-%20in%20trunk%3A%20.%20tools&In-Reply-To=%3C200701162257.l0GMvp4r001910%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   <LINK REL="Previous"  HREF="000009.html">
+   <LINK REL="Next"  HREF="000011.html">
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r25 - in trunk: . tools</H1>
+    <B>zwer at mail.berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r25%20-%20in%20trunk%3A%20.%20tools&In-Reply-To=%3C200701162257.l0GMvp4r001910%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r25 - in trunk: . tools">zwer at mail.berlios.de
+       </A><BR>
+    <I>Tue Jan 16 23:57:51 CET 2007</I>
+    <P><UL>
+        <LI>Previous message: <A HREF="000009.html">[Ffnetdev-svncheckins] r24 - in trunk: . tools
+</A></li>
+        <LI>Next message: <A HREF="000011.html">[Ffnetdev-svncheckins] r26 - in trunk: . tools
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10">[ date ]</a>
+              <a href="thread.html#10">[ thread ]</a>
+              <a href="subject.html#10">[ subject ]</a>
+              <a href="author.html#10">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2007-01-16 23:57:40 +0100 (Tue, 16 Jan 2007)
+New Revision: 25
+
+Modified:
+   trunk/pes2ts.c
+   trunk/pes2ts.h
+   trunk/streamdevice.c
+   trunk/streamdevice.h
+   trunk/tools/socket.c
+   trunk/tsworker.c
+Log:
+- auf PES-Streaming umgestellt
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/pes2ts.c	2007-01-16 22:57:40 UTC (rev 25)
+@@ -13,26 +13,44 @@
+ 
+ #include &quot;pes2ts.h&quot;
+ 
+-cPES2TSRemux::cPES2TSRemux(int VPid, int APid):
++//////////////////////////////////////////////////////////////////////////////
++cPESRemux::cPESRemux(int inputBufferSize, int outputBufferSize): 
++   m_InputBuffer(new cRingBufferLinear(inputBufferSize, outputBufferSize))
++{
++   OutputLocked = false;
++   m_InputBuffer-&gt;SetTimeouts(0, 1000);  // IMPORTANT to avoid busy wait in threads main loop and thus a high CPU load
++}
++
++cPESRemux::~cPESRemux()
++{
++   delete m_InputBuffer;
++}
++
++int cPESRemux::Put(const uchar *Data, int Count)
++{
++  InputMutex.Lock();
++  int result = m_InputBuffer-&gt;Put(Data, Count);
++  InputMutex.Unlock();
++  return ( result);
++}
++
++
++//////////////////////////////////////////////////////////////////////////////
++cPES2TSRemux::cPES2TSRemux(int VPid, int APid): cPESRemux(INPUTBUFSIZE, IPACKS),
+     cThread(&quot;[ffnetdev] PES2TS remux&quot;),
+     m_OutputBuffer(new cRingBufferLinear(OUTPUTBUFSIZE, TS_SIZE * 2)),
+-    m_InputBuffer(new cRingBufferLinear(INPUTBUFSIZE, IPACKS)),
+     m_Active(false),
+     m_PlayModeChanged(false)
+ {
+   vpid = VPid;
+   apid = APid;
+-  m_InputBuffer-&gt;SetTimeouts(0, 1000);  // IMPORTANT to avoid busy wait in threads main loop and thus a high CPU load
+   Start();
+-  OutputLocked = false;
+ }
+ 
+ cPES2TSRemux::~cPES2TSRemux()
+ {
+   m_Active = false;
+-  delete m_InputBuffer;
+   delete m_OutputBuffer;
+-
+ }
+ 
+ void cPES2TSRemux::Action(void)
+@@ -57,8 +75,8 @@
+ 
+     if (m_PlayModeChanged)
+     {
+-	cCondWait::SleepMs(1500);
+-	m_PlayModeChanged = false;
++	   cCondWait::SleepMs(1500);
++	   m_PlayModeChanged = false;
+     }
+ 
+     if (m_InputBuffer-&gt;Available() &lt; (int)IPACKS*10) {	
+@@ -199,12 +217,11 @@
+ }
+ 
+ 
+-int cPES2TSRemux::Put(const uchar *Data, int Count)
++//////////////////////////////////////////////////////////////////////////////
++cPES2PESRemux::cPES2PESRemux(): cPESRemux(INPUTBUFSIZE + OUTPUTBUFSIZE, IPACKS)
+ {
+-  InputMutex.Lock();
+-  int result = m_InputBuffer-&gt;Put(Data, Count);
+-  InputMutex.Unlock();
+-  return ( result);
+ }
+ 
+-
++cPES2PESRemux::~cPES2PESRemux()
++{
++}
+
+Modified: trunk/pes2ts.h
+===================================================================
+--- trunk/pes2ts.h	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/pes2ts.h	2007-01-16 22:57:40 UTC (rev 25)
+@@ -16,15 +16,40 @@
+ #define TS_SIZE         188
+ #define IPACKS		2048
+ 
+-class cPES2TSRemux: public cThread {
++class cPESRemux {
+ private:
++   bool  	   	   OutputLocked;
++   
++protected:
++   cRingBufferLinear *m_InputBuffer;
++   cMutex  	         InputMutex;
++
++public:
++   cPESRemux(int inputBufferSize, int outputBufferSize);
++	virtual ~cPESRemux();
++	
++   int Put(const uchar *Data, int Count);
++   void DelInput (int Count) { InputMutex.Lock(); m_InputBuffer -&gt;Del(Count); InputMutex.Unlock(); }
++   void ClearInput () { InputMutex.Lock(); m_InputBuffer -&gt;Clear(); InputMutex.Unlock(); }
++   
++   virtual int Available(void) = 0;
++   virtual int Free(void) = 0;
++   virtual int InputFree(void) = 0;
++   virtual uchar *Get(int &amp;Count) = 0;
++   virtual void DelOutput(int Count) = 0;
++   virtual void ClearOutput() = 0;
++   void LockOutput()   { while (OutputLocked) cCondWait::SleepMs(1); OutputLocked = true; }
++   void UnlockOutput() { OutputLocked = false; }
++	virtual void PlayModeChange() {}; 
++   
++};
++
++class cPES2TSRemux: public cPESRemux, cThread {
++private:
+ 	cRingBufferLinear *m_OutputBuffer;
+-	cRingBufferLinear *m_InputBuffer;
+ 	bool               m_Active;
+ 	unsigned short	   vpid;
+ 	unsigned short	   apid;
+-        bool  	   	   OutputLocked;
+-	cMutex  	   InputMutex;
+ 	bool 		   m_PlayModeChanged;
+   
+ protected:
+@@ -34,17 +59,28 @@
+ 	cPES2TSRemux(int VPid, int APid);
+ 	virtual ~cPES2TSRemux();
+ 
+-	int Free(void) { return m_InputBuffer-&gt;Free(); }
+-	int Available(void) { return m_OutputBuffer-&gt;Available(); }
+-	int Put(const uchar *Data, int Count);
++   int Available(void) { return m_OutputBuffer-&gt;Available(); }
++	int Free(void) { return m_OutputBuffer-&gt;Free(); }
++	int InputFree(void) { return m_InputBuffer-&gt;Free(); }
+ 	uchar *Get(int &amp;Count) { return  m_OutputBuffer-&gt;Get(Count); }
+ 	void DelOutput(int Count) { m_OutputBuffer-&gt;Del(Count); }
+-	void DelInput (int Count) { InputMutex.Lock(); m_InputBuffer -&gt;Del(Count); InputMutex.Unlock(); }
+ 	void ClearOutput() { LockOutput(); m_OutputBuffer-&gt;Clear(); UnlockOutput(); }
+-	void ClearInput () { InputMutex.Lock(); m_InputBuffer -&gt;Clear(); InputMutex.Unlock(); }
+-	void LockOutput()   { while (OutputLocked) cCondWait::SleepMs(1); OutputLocked = true; }
+-	void UnlockOutput() { OutputLocked = false; }
+ 	void PlayModeChange() { m_PlayModeChanged = true; } 
++	
+ };
+ 
++class cPES2PESRemux: public cPESRemux {
++public:
++	cPES2PESRemux();
++	virtual ~cPES2PESRemux();
++
++   int Available(void) { return m_InputBuffer-&gt;Available(); }
++   int Free(void) { return m_InputBuffer-&gt;Free(); }
++   int InputFree(void) { return m_InputBuffer-&gt;Free(); }
++	uchar *Get(int &amp;Count) { return  m_InputBuffer-&gt;Get(Count); }
++	void DelOutput(int Count) { m_InputBuffer-&gt;Del(Count); }
++	void ClearOutput() { LockOutput(); m_InputBuffer-&gt;Clear(); UnlockOutput(); } 
++	
++};
++
+ #endif // PES2TSREMUX_H
+
+Modified: trunk/streamdevice.c
+===================================================================
+--- trunk/streamdevice.c	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/streamdevice.c	2007-01-16 22:57:40 UTC (rev 25)
+@@ -12,103 +12,97 @@
+ 
+ cStreamDevice::cStreamDevice(void)
+ {
+-#ifdef DEBUG
+-    fprintf(stderr,&quot;[ffnetdev] Device: Constructor cStreamDevice \n&quot;);
+-#endif
+-    m_Remux = new cPES2TSRemux(TS_VPID, TS_APID);   
+-
++    dsyslog(&quot;[ffnetdev] Device: Constructor cStreamDevice \n&quot;);
++    //m_Remux = new cPES2TSRemux(TS_VPID, TS_APID);   
++    m_Remux = new cPES2PESRemux();   
+ }
+ 
+ cStreamDevice::~cStreamDevice(void)
+ {
+-#ifdef DEBUG    
+-    fprintf(stderr,&quot;[ffnetdev] Device: Destructor cStreamDevice \n&quot;);
+-#endif
+-    DELETENULL(m_Remux);
++   dsyslog(&quot;[ffnetdev] Device: Destructor cStreamDevice \n&quot;);
++   DELETENULL(m_Remux);
+ }
+ 
+ 
+ void cStreamDevice::MakePrimaryDevice(bool On)
+ {
+-#ifdef DEBUG
+-  fprintf(stderr,&quot;[ffnetdev] Device: ffnetdev becomes primary device. Registering our OSD provider...\n&quot;);
+-#endif
++  dsyslog(&quot;[ffnetdev] Device: ffnetdev becomes primary device. Registering our OSD provider...\n&quot;);
+   new cNetOSDProvider();
+ }
+ 
+ int cStreamDevice::ProvidesCa(const cChannel *Channel) const
+ {
+-    return 0;
++   return 0;
+ }
+ 
+ bool cStreamDevice::HasDecoder(void) const
+ {
+-    return true; // We can decode MPEG2
++   return true; // We can decode MPEG2
+ }
+ 
+ bool cStreamDevice::CanReplay(void) const
+ {
+-    return true;  // We can replay
++   return true;  // We can replay
+ }
+ 
+ bool cStreamDevice::SetPlayMode(ePlayMode PlayMode)
+ {
+-    fprintf(stderr, &quot;[ffnetdev] Device: Setting playmode(not implemented). Mode: %d\n&quot;,PlayMode);
+-    cOSDWorker::SendPlayMode(PlayMode);
+-    m_Remux-&gt;ClearInput();
+-    m_Remux-&gt;ClearOutput();
+-    m_Remux-&gt;PlayModeChange();
+-    return true;
++   dsyslog(&quot;[ffnetdev] Device: Setting playmode. Mode: %d\n&quot;,PlayMode);
++   cOSDWorker::SendPlayMode(PlayMode);
++   m_Remux-&gt;ClearInput();
++   m_Remux-&gt;ClearOutput();
++   m_Remux-&gt;PlayModeChange();
++   return true;
+ }
+ 
+ void cStreamDevice::TrickSpeed(int Speed)
+ {
+-    fprintf(stderr,&quot;[ffnetdev] Device: Trickspeed(not implemented). Speed: %d\n&quot;, Speed);
+-    m_Remux-&gt;ClearInput();
+-    m_Remux-&gt;ClearOutput();
+-    m_Remux-&gt;PlayModeChange();
++   dsyslog(&quot;[ffnetdev] Device: Trickspeed(not implemented). Speed: %d\n&quot;, Speed);
++   m_Remux-&gt;ClearInput();
++   m_Remux-&gt;ClearOutput();
++   m_Remux-&gt;PlayModeChange();
+ }
+ 
+ void cStreamDevice::Clear(void)
+ {
+-    fprintf(stderr,&quot;[ffnetdev] Device: Clear(not implemented).\n&quot;);
+-    m_Remux-&gt;ClearInput();
+-    m_Remux-&gt;ClearOutput();
+-    m_Remux-&gt;PlayModeChange();
++   dsyslog(&quot;[ffnetdev] Device: Clear(not implemented).\n&quot;);
++   m_Remux-&gt;ClearInput();
++   m_Remux-&gt;ClearOutput();
++   m_Remux-&gt;PlayModeChange();
+ //    cDevice::Clear();
+ }
+ void cStreamDevice::Play(void)
+ {
+-    fprintf(stderr,&quot;[ffnetdev] Device: Play(not implemented).\n&quot;);
++   dsyslog(&quot;[ffnetdev] Device: Play(not implemented).\n&quot;);
+ //    cDevice::Play();
+ }
+ 
+ void cStreamDevice::Freeze(void)
+ {
+-    fprintf(stderr,&quot;[ffnetdev] Device: Freeze(not implemented).\n&quot;);
++    dsyslog(&quot;[ffnetdev] Device: Freeze(not implemented).\n&quot;);
+ //    cDevice::Freeze();
+ }
+ 
+ void cStreamDevice::Mute(void)
+ {
+-    fprintf(stderr,&quot;[ffnetdev] Device: Mute(not implemented).\n&quot;);
++   dsyslog(&quot;[ffnetdev] Device: Mute(not implemented).\n&quot;);
+ //    cDevice::Mute();
+ }
+ 
+ void cStreamDevice::SetVolumeDevice(int Volume)
+ {
+-  fprintf (stderr, &quot;[ffnetdev] Device: Setting volume to %d (not implemented).\n&quot;, Volume);
++  dsyslog(&quot;[ffnetdev] Device: Setting volume to %d (not implemented).\n&quot;, Volume);
+ }
+ 
+ void cStreamDevice::StillPicture(const uchar *Data, int Length)
+ {
+-    fprintf(stderr,&quot;[ffnetdev] Device: StillPicture(not implemented).\n&quot;);
++   dsyslog(&quot;[ffnetdev] Device: StillPicture(not implemented).\n&quot;);
+ }
+ 
+ bool cStreamDevice::Poll(cPoller &amp;Poller, int TimeoutMs)
+ {
+-  //fprintf(stderr,&quot;[ffnetdev] Device: Poll TimeoutMs: %d ....\n&quot;,TimeoutMs);
+-  return true;
++   //dsyslog(&quot;[ffnetdev] Device: Poll TimeoutMs: %d ....\n&quot;,TimeoutMs);
++   return true;
+ }
+ /* ----------------------------------------------------------------------------
+  */
+@@ -120,7 +114,7 @@
+ {
+    if (cTSWorker::HaveStreamClient()) 
+    {
+-       while ((m_Remux-&gt;Free() &lt; Length) &amp;&amp; cTSWorker::HaveStreamClient())
++       while ((m_Remux-&gt;InputFree() &lt; Length) &amp;&amp; cTSWorker::HaveStreamClient())
+            cCondWait::SleepMs(1);
+        int result=m_Remux-&gt;Put(Data, Length);
+        if (result!=Length) {
+@@ -150,7 +144,7 @@
+    if (cTSWorker::HaveStreamClient()) 
+    {
+ 
+-       while ((m_Remux-&gt;Free() &lt; Length) &amp;&amp; cTSWorker::HaveStreamClient())
++       while ((m_Remux-&gt;InputFree() &lt; Length) &amp;&amp; cTSWorker::HaveStreamClient())
+            cCondWait::SleepMs(1);
+        int result=m_Remux-&gt;Put(Data, Length);
+        if (result!=Length) {
+
+Modified: trunk/streamdevice.h
+===================================================================
+--- trunk/streamdevice.h	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/streamdevice.h	2007-01-16 22:57:40 UTC (rev 25)
+@@ -17,7 +17,7 @@
+ 
+ class cStreamDevice: public cDevice {
+ private:
+-	  cPES2TSRemux *m_Remux;
++	  cPESRemux *m_Remux;
+ protected:
+ public:
+   cStreamDevice(void);
+@@ -47,6 +47,7 @@
+   void Del(int Count) { m_Remux-&gt;DelOutput(Count); }
+   void ClearOutput() { m_Remux-&gt;ClearOutput(); }
+   int Available(void) { return m_Remux-&gt;Available(); }
++  int Free(void) { return m_Remux-&gt;Free(); }
+ };
+ 
+ #endif
+
+Modified: trunk/tools/socket.c
+===================================================================
+--- trunk/tools/socket.c	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/tools/socket.c	2007-01-16 22:57:40 UTC (rev 25)
+@@ -8,7 +8,8 @@
+ #include &lt;errno.h&gt;
+ #include &lt;fcntl.h&gt;
+ 
+-#define UDP_TX_BUF_SIZE ((188*7+3)*20)
++#define UDP_TX_BUF_SIZE (188*348)
++//#define TCP_TX_BUF_SIZE (1024 * 30)
+ 
+ cTBSocket::cTBSocket(int Type) {
+ 	memset(&amp;m_LocalAddr, 0, sizeof(m_LocalAddr));
+@@ -21,7 +22,7 @@
+ }
+ 
+ bool cTBSocket::OpenUDP(const std::string &amp;Host, unsigned int Port) {
+-	int socket, tmp;
++	int socket;
+ 	struct sockaddr_in my_addr;
+ 
+ 	if (IsOpen()) Close();
+@@ -36,16 +37,18 @@
+ 	my_addr.sin_family = AF_INET;
+ 	my_addr.sin_port = htons(Port);
+ 	my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+-		    
++
++	/* limit the tx buf size to limit latency */
++#ifdef UDP_TX_BUF_SIZE
++	int tmp = UDP_TX_BUF_SIZE;
++	if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char*)&amp;tmp, sizeof(tmp)) &lt; 0)
++	    goto closefd;
++#endif
++
+ /*	tmp = 1;
+ 	if (setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, (char*)&amp;tmp, sizeof(tmp)) &lt; 0)
+ 	    goto closefd;*/
+ 		    
+-	/* limit the tx buf size to limit latency */
+-	tmp = UDP_TX_BUF_SIZE;
+-	if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char*)&amp;tmp, sizeof(tmp)) &lt; 0)
+-	    goto closefd;
+-
+ 	/* the bind is needed to give a port to the socket now */
+ /*	if (bind(socket,(struct sockaddr *)&amp;my_addr, sizeof(my_addr)) &lt; 0) 
+ 	    goto closefd;*/
+@@ -108,6 +111,13 @@
+ 	if ((socket = ::socket(PF_INET, m_Type, IPPROTO_IP)) == -1)
+ 		return false;
+ 
++	/* limit the tx buf size to limit latency */
++#ifdef TCP_TX_BUF_SIZE
++	int tmp = TCP_TX_BUF_SIZE;
++	if (setsockopt(socket, SOL_SOCKET, SO_SNDBUF, (char*)&amp;tmp, sizeof(tmp)) &lt; 0)
++	    goto closefd;
++#endif
++
+ 	val = 1;
+ 	if (::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &amp;val, sizeof(val)) == -1)
+ 		goto closefd; //return false;
+
+Modified: trunk/tsworker.c
+===================================================================
+--- trunk/tsworker.c	2007-01-06 22:04:00 UTC (rev 24)
++++ trunk/tsworker.c	2007-01-16 22:57:40 UTC (rev 25)
+@@ -4,7 +4,7 @@
+  * See the README file for copyright information and how to reach the author.
+  *
+  */
+- 
++
+ #include &lt;sys/time.h&gt;
+ 
+ #include &lt;vdr/tools.h&gt;
+@@ -17,9 +17,11 @@
+ 
+ #define TS_PACKET_SIZE (188)
+ #define UDP_PACKET_SIZE (TS_PACKET_SIZE * 7)
+-#define UDP_MAX_BITRATE 7000000
++#define UDP_MAX_BITRATE 8112832
+ #define UDP_SEND_INTERVALL 1000
++#define TCP_SEND_SIZE (1024 * 10)
+ 
++// 8388608 = 8MBit
+ struct TSData
+ {
+ 	char packNr;
+@@ -188,6 +190,7 @@
+ 				m_StreamDevice-&gt;LockOutput();
+       				uchar *buffer = m_StreamDevice-&gt;Get(count);
+ 				if (buffer!=NULL) {
++				   count = (count &gt; TCP_SEND_SIZE) ? TCP_SEND_SIZE : count;
+ 					int available = count;
+ 					int done      = 0;
+ 					int written   = 0;
+@@ -225,15 +228,16 @@
+ 					bytessend += count;
+ 					if (curtime.tv_sec &gt; oldtime.tv_sec + 10)
+ 					{
+-						double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
+-							- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
++						double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000.0)) / 1000 
++							- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;
+ 						double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
++						int bufstat = m_StreamDevice-&gt;Available() * 100 / (m_StreamDevice-&gt;Available() + m_StreamDevice-&gt;Free()); 
+ #ifdef DEBUG
+-						fprintf(stderr, &quot;[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n&quot;,
+-							rate, bytessend - oldbytessend);
++						fprintf(stderr, &quot;[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send, %d%% Buffer used\n&quot;,
++							rate, bytessend - oldbytessend, bufstat);
+ #endif						
+-						dsyslog(&quot;[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n&quot;,
+-							rate, bytessend - oldbytessend);
++						dsyslog(&quot;[ffnetdev] Streamer: Rate %2.3f MBit/Sec, %d Bytes send, %d%% Buffer used\n&quot;,
++							rate, bytessend - oldbytessend, bufstat);
+ 						
+ 						oldbytessend = bytessend;
+ 						oldtime = curtime;
+@@ -337,12 +341,13 @@
+ 				int written   = 0;
+ 				char data[100];
+ 				int  rcvCount;
++				int sleepTime;
+ 
+-				rcvCount=m_StreamClient.Read(data, 10);
++			/*	rcvCount=m_StreamClient.Read(data, 10);
+ 				if (rcvCount &gt; 0)
+ 				{
+ 					isyslog(&quot;[ffnetdev] Streamer: empfangen:%d Bytes\n&quot;, rcvCount);
+-				}
++				}*/
+ 
+ 				if (oldPacketTime == 0)
+ 					oldPacketTime = get_time()- UDP_SEND_INTERVALL;
+@@ -350,52 +355,21 @@
+ 				while ((available &gt; 0) &amp;&amp; (have_Streamclient == true) &amp;&amp;
+ 					   (!close_Streamclient_request))
+ 				{
+-					while ((tsData.packsCount * TS_PACKET_SIZE &lt; UDP_PACKET_SIZE) &amp;&amp; (available &gt; 0))
+-					{
+-						int moveCount = (available &gt;= TS_PACKET_SIZE) ?  TS_PACKET_SIZE : available;
+-						moveCount = (moveCount + restData &gt;= TS_PACKET_SIZE) ?  TS_PACKET_SIZE - restData : moveCount;
+-						memcpy(&amp;tsData.data[(tsData.packsCount * TS_PACKET_SIZE) + restData], &amp;buffer[done], moveCount);
+-						available -= moveCount;
+-						done += moveCount;
+-						if (restData + moveCount == TS_PACKET_SIZE)
+-						{
+-							char *data = &amp;tsData.data[tsData.packsCount * TS_PACKET_SIZE];
+-							for (int i = 0; i &lt; 4; i++)
+-							{	
+-								tsData.tsHeaderCRC += (char)*(data + i);
+-							}
+-							restData = 0;
+-							tsData.packsCount ++;
+-						}
+-						else
+-						{
+-							restData = moveCount;
+-							continue;
+-						}
+-					}
++					while ((sleepTime = oldPacketTime + UDP_SEND_INTERVALL - get_time()) &gt; 0)
++						usleep(sleepTime);
+ 
+-					if (restData &gt; 0)
+-						continue;
+-
+-					while (get_time() &lt; oldPacketTime + UDP_SEND_INTERVALL)
+-						cCondWait::SleepMs(1);
+-
+ 					if (toSend == 0)
+ 						toSend = (long)(UDP_MAX_BITRATE * (((double)get_time() - oldPacketTime) / 1000000) / 8);
+ 					
+-					int sendcount = tsData.packsCount * TS_PACKET_SIZE + 3;
+-					if (toSend &lt; sendcount)
+-					{
+-						toSend = 0;
+-						oldPacketTime = get_time();
+-						continue;
+-					}
++					int sendcount = (available &gt; toSend) ? toSend : available;
++					sendcount = (sendcount &gt; UDP_PACKET_SIZE) ? UDP_PACKET_SIZE : sendcount;
+ 
+-					char* pTsData = (char*)&tsData;
++					available -= sendcount;
++
+ 					while ((sendcount &gt; 0) &amp;&amp; (have_Streamclient == true) &amp;&amp;
+ 					   (!close_Streamclient_request))
+ 					{
+-						if (((written=m_StreamClient.Write(pTsData, sendcount)) &lt; 0) &amp;&amp; 
++						if (((written=m_StreamClient.Write(&amp;buffer[done], sendcount)) &lt; 0) &amp;&amp; 
+ 							(errno != EAGAIN)) 
+ 						{
+ 							isyslog(&quot;[ffnetdev] Streamer: Couldn't send data: %d %s Len:%d\n&quot;, errno, strerror(errno), sendcount);
+@@ -404,22 +378,17 @@
+ 						
+ 						if (written &gt; 0)
+ 						{
++							done += written;
+ 							sendcount -= written;
+-							pTsData   += written;
+ 							toSend	  -= written;
++							if (toSend == 0)
++								oldPacketTime = get_time();
+ 						}
+ 						else
+ 						{
+ 							cCondWait::SleepMs(5);
+ 						}
+ 					}
+-
+-					if (sendcount == 0)
+-					{
+-						tsData.packsCount = 0;
+-						tsData.tsHeaderCRC = 0;
+-						tsData.packNr ++;
+-					}
+ 				}
+ 				m_StreamDevice-&gt;Del(count);
+ 
+@@ -432,10 +401,10 @@
+ 				}
+ 					
+ 				bytessend += count;
+-				if (curtime.tv_sec &gt; oldtime.tv_sec + 10)
++				if (curtime.tv_sec &gt; oldtime.tv_sec + 3)
+ 				{
+-					double secs = (curtime.tv_sec * 1000 + (curtime.tv_usec / 1000)) / 1000 
+-						- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000)) / 1000;
++					double secs = (curtime.tv_sec * 1000 + ((double)curtime.tv_usec / 1000.0)) / 1000 
++						- (oldtime.tv_sec * 1000 + (oldtime.tv_usec / 1000.0)) / 1000;
+ 					double rate = (double)((bytessend - oldbytessend) / secs) * 8 / 1024 / 1024;
+ #ifdef DEBUG
+ 					fprintf(stderr, &quot;[ffnetdev] Streamer: current TransferRate %2.3f MBit/Sec, %d Bytes send\n&quot;,
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	<LI>Previous message: <A HREF="000009.html">[Ffnetdev-svncheckins] r24 - in trunk: . tools
+</A></li>
+	<LI>Next message: <A HREF="000011.html">[Ffnetdev-svncheckins] r26 - in trunk: . tools
+</A></li>
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#10">[ date ]</a>
+              <a href="thread.html#10">[ thread ]</a>
+              <a href="subject.html#10">[ subject ]</a>
+              <a href="author.html#10">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>

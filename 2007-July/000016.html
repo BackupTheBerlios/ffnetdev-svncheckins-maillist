@@ -1,0 +1,158 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<HTML>
+ <HEAD>
+   <TITLE> [Ffnetdev-svncheckins] r31 - trunk
+   </TITLE>
+   <LINK REL="Index" HREF="http://lists.berlios.de/pipermail/ffnetdev-svncheckins/2007-July/index.html" >
+   <LINK REL="made" HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r31%20-%20trunk&In-Reply-To=%3C200707012215.l61MFwQ6014966%40sheep.berlios.de%3E">
+   <META NAME="robots" CONTENT="index,nofollow">
+   <style type="text/css">
+       pre {
+           white-space: pre-wrap;       /* css-2.1, curent FF, Opera, Safari */
+           }
+   </style>
+   <META http-equiv="Content-Type" content="text/html; charset=us-ascii">
+   
+   
+ </HEAD>
+ <BODY BGCOLOR="#ffffff">
+   <H1>[Ffnetdev-svncheckins] r31 - trunk</H1>
+    <B>zwer at mail.berlios.de</B> 
+    <A HREF="mailto:ffnetdev-svncheckins%40lists.berlios.de?Subject=Re%3A%20%5BFfnetdev-svncheckins%5D%20r31%20-%20trunk&In-Reply-To=%3C200707012215.l61MFwQ6014966%40sheep.berlios.de%3E"
+       TITLE="[Ffnetdev-svncheckins] r31 - trunk">zwer at mail.berlios.de
+       </A><BR>
+    <I>Mon Jul  2 00:15:58 CEST 2007</I>
+    <P><UL>
+        
+        
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16">[ date ]</a>
+              <a href="thread.html#16">[ thread ]</a>
+              <a href="subject.html#16">[ subject ]</a>
+              <a href="author.html#16">[ author ]</a>
+         </LI>
+       </UL>
+    <HR>  
+<!--beginarticle-->
+<PRE>Author: zwer
+Date: 2007-07-02 00:15:56 +0200 (Mon, 02 Jul 2007)
+New Revision: 31
+
+Modified:
+   trunk/clientcontrol.c
+   trunk/osdworker.c
+   trunk/pes2ts.c
+Log:
+- sporadischen Fehler in VNC-Protokoll behoben
+
+
+Modified: trunk/clientcontrol.c
+===================================================================
+--- trunk/clientcontrol.c	2007-03-29 13:32:23 UTC (rev 30)
++++ trunk/clientcontrol.c	2007-07-01 22:15:56 UTC (rev 31)
+@@ -202,7 +202,7 @@
+    SClientControl data;
+    SClientControlPlayState state;
+        
+-   if ((m_Instance == NULL) || (m_Instance-&gt;m_ClientSocket == NULL))
++   if ((m_Instance == NULL) || (m_Instance-&gt;m_ClientSocket == NULL) || (!m_Instance-&gt;m_bHaveClient))
+       return false;
+ 
+    m_Instance-&gt;m_bPlayStateReq = false;
+@@ -232,7 +232,7 @@
+    SClientControl data;
+    int written, available, done;
+   
+-   if ((m_Instance == NULL) || (m_Instance-&gt;m_ClientSocket == NULL))
++   if ((m_Instance == NULL) || (m_Instance-&gt;m_ClientSocket == NULL) || (!m_Instance-&gt;m_bHaveClient))
+       return false;
+   
+    data.pakType = ptStillPicture;
+@@ -274,7 +274,7 @@
+    SClientControl data;
+    int written, available, done;
+   
+-   if ((m_Instance == NULL) || (m_Instance-&gt;m_ClientSocket == NULL))
++   if ((m_Instance == NULL) || (m_Instance-&gt;m_ClientSocket == NULL) || (!m_Instance-&gt;m_bHaveClient))
+       return false;
+   
+    data.pakType = ptFreeze;
+
+Modified: trunk/osdworker.c
+===================================================================
+--- trunk/osdworker.c	2007-03-29 13:32:23 UTC (rev 30)
++++ trunk/osdworker.c	2007-07-01 22:15:56 UTC (rev 31)
+@@ -223,7 +223,7 @@
+ 	    return false;
+ 	}
+    
+-	rfbFramebufferUpdateMsg fu;
++	
+ 	struct timeval curtime;
+ 	gettimeofday(&amp;curtime, 0);
+ 	curtime.tv_sec = curtime.tv_sec - (((int)curtime.tv_sec / 1000000) * 1000000);
+@@ -246,16 +246,20 @@
+ 	    const tColor *OSDColors = (tColor*)m_Instance-&gt;m_pOsdBitmap-&gt;Colors(numOSDColors);
+ 	    cOSDWorker::SendCMAP(numOSDColors, OSDColors);
+ 	}
++		
++	int BufferSize = m_Instance-&gt;m_pEncoder-&gt;RequiredBuffSize(x2-x1+1, y2-y1+1) + sizeof(rfbFramebufferUpdateMsg);
++	m_Instance-&gt;CreateSendBuffer(BufferSize);
+ 	
++	rfbFramebufferUpdateMsg *fu = (rfbFramebufferUpdateMsg*)m_Instance-&gt;m_pSendBuffer;
+ 	RECT rect = {x1, y1, x2, y2};
+-   	fu.type=rfbFramebufferUpdate;
+-   	fu.nRects=Swap16IfLE(1);
+-   	OSDWrite((unsigned char*)&amp;fu, sz_rfbFramebufferUpdateMsg);
+-	//int BufferSize = m_Instance-&gt;m_pEncoder-&gt;RequiredBuffSize(x2-x1, y2-y1);
+-	//m_Instance-&gt;CreateSendBuffer(BufferSize);
++   	fu-&gt;type=rfbFramebufferUpdate;
++	fu-&gt;pad=0;
++   	fu-&gt;nRects=Swap16IfLE(1);
++	
+ 	if (m_Instance-&gt;m_pEncoder != NULL)
+ 	{
+-	    int BufferSize = m_Instance-&gt;m_pEncoder-&gt;EncodeRect((BYTE*)(m_Instance-&gt;m_pOsdBitmap-&gt;Data(0, 0)), m_Instance-&gt;m_pSendBuffer, rect);
++	    BufferSize = m_Instance-&gt;m_pEncoder-&gt;EncodeRect((BYTE*)(m_Instance-&gt;m_pOsdBitmap-&gt;Data(0, 0)), &amp;(m_Instance-&gt;m_pSendBuffer[sizeof(rfbFramebufferUpdateMsg)]), rect); 
++	    BufferSize += sizeof(rfbFramebufferUpdateMsg);
+ #ifdef DEBUG
+ 	    fprintf(stderr, &quot;[ffnetdev] VNC: Send OSD Data %d/%d/%d/%d x1/y1/x2/y2 %d Bytes\n&quot;, x1, y1, x2, y2, BufferSize);
+ #endif
+
+Modified: trunk/pes2ts.c
+===================================================================
+--- trunk/pes2ts.c	2007-03-29 13:32:23 UTC (rev 30)
++++ trunk/pes2ts.c	2007-07-01 22:15:56 UTC (rev 31)
+@@ -291,7 +291,9 @@
+       
+       
+          // check for valid stream id type: is it video or audio or unknown?
+-         if (data[3]&gt;=0x00)
++         if ( ((data[3]&gt;=0xC0) &amp;&amp; (data[3]&lt;=0xDF)) || 
++              (data[3] == 0xBD) || 
++              ((data[3]&gt;=0xE0) &amp;&amp; (data[3]&lt;=0xEF)))
+          {
+             while (m_OutputBuffer-&gt;Free() &lt; (int)packetlen) 
+             {	
+
+
+</PRE>
+
+<!--endarticle-->
+    <HR>
+    <P><UL>
+        <!--threads-->
+	
+	
+         <LI> <B>Messages sorted by:</B> 
+              <a href="date.html#16">[ date ]</a>
+              <a href="thread.html#16">[ thread ]</a>
+              <a href="subject.html#16">[ subject ]</a>
+              <a href="author.html#16">[ author ]</a>
+         </LI>
+       </UL>
+
+<hr>
+<a href="https://lists.berlios.de/mailman/listinfo/ffnetdev-svncheckins">More information about the Ffnetdev-svncheckins
+mailing list</a><br>
+</body></html>
